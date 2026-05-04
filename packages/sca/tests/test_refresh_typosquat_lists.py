@@ -141,8 +141,8 @@ def test_refresh_all_writes_canonical_files(tmp_path: Path):
     assert all(s == "updated" for s in results.values()), results
     assert (tmp_path / "popular" / "PyPI.json").exists()
     assert (tmp_path / "popular" / "npm.json").exists()
-    assert (tmp_path / "popular" / "crates.json").exists()
-    assert (tmp_path / "popular" / "packagist.json").exists()
+    assert (tmp_path / "popular" / "Cargo.json").exists()
+    assert (tmp_path / "popular" / "Packagist.json").exists()
     pypi_out = json.loads((tmp_path / "popular" / "PyPI.json").read_text())
     assert pypi_out == ["requests"]
 
@@ -189,8 +189,8 @@ def test_refresh_all_failure_isolation(tmp_path: Path):
     results = refresh_all(http, top_n=10, data_dir=tmp_path)
     assert results["PyPI.json"] == "updated"
     assert results["npm.json"].startswith("failed:")
-    assert results["crates.json"] == "updated"
-    assert results["packagist.json"] == "updated"
+    assert results["Cargo.json"] == "updated"
+    assert results["Packagist.json"] == "updated"
 
 
 def test_refresh_all_only_filter(tmp_path: Path):
@@ -200,7 +200,7 @@ def test_refresh_all_only_filter(tmp_path: Path):
     results = refresh_all(http, top_n=10, data_dir=tmp_path, only=["PyPI"])
     assert results["PyPI.json"] == "updated"
     assert results["npm.json"] == "skipped"
-    assert results["crates.json"] == "skipped"
+    assert results["Cargo.json"] == "skipped"
 
 
 def test_refresh_all_empty_response_treated_as_failure(tmp_path: Path):

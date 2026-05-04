@@ -168,10 +168,12 @@ def fetch_packagist(http: HttpClient, top_n: int) -> List[str]:
 # typosquat.py loads via ``packages/sca/data/popular/<eco>.json``.
 _FETCHERS: Dict[str, Tuple[str, Callable[[HttpClient, int], List[str]]]] = {
     # bundle filename → (display name, fetcher)
+    # Filenames must match the ecosystem strings in parsers/ so the
+    # typosquat detector's ``_load_popular(ecosystem)`` finds them.
     "PyPI.json":      ("PyPI",      fetch_pypi),
     "npm.json":       ("npm",       fetch_npm),
-    "crates.json":    ("crates.io", fetch_crates),
-    "packagist.json": ("Packagist", fetch_packagist),
+    "Cargo.json":     ("Cargo",     fetch_crates),
+    "Packagist.json": ("Packagist", fetch_packagist),
 }
 
 
@@ -234,7 +236,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--only", action="append", default=None,
         metavar="ECO",
         help="restrict to one or more ecosystems "
-             "(PyPI, npm, crates.io, Packagist). Repeatable.",
+             "(PyPI, npm, Cargo, Packagist). Repeatable.",
     )
     p.add_argument(
         "--data-dir", type=Path, default=_DATA_DIR,
