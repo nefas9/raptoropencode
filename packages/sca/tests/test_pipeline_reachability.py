@@ -134,7 +134,8 @@ def test_no_reachability_flag_skips_scan(tmp_path: Path) -> None:
     cache = JsonCache(root=tmp_path / "cache")
     result = run_sca(
         target, out,
-        RunOptions(enable_reachability=False),
+        RunOptions(enable_reachability=False,
+                   enable_llm_review=False, enable_triage=False),
         http=http, cache=cache,
     )
     rows = json.loads(result.findings_path.read_text())
