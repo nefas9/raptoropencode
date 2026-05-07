@@ -160,8 +160,12 @@ ReachabilityVerdict = Literal[
     "not_evaluated",   # parser doesn't support this ecosystem's import detection
     "not_reachable",   # dep is in tree but no import found in non-test source
     "imported",        # at least one import found in non-test source
+    "not_function_reachable",  # imported, but the OSV-listed affected function(s)
+                       # aren't called by the project (function-level resolver
+                       # — currently PyPI when OSV ships affected_functions)
     "likely_called",   # vulnerable function/symbol confirmed at a call site
-                       # (Go function-level when OSV ships symbols)
+                       # (Go function-level when OSV ships symbols; PyPI
+                       # function-level via core.inventory.reachability)
 ]
 
 

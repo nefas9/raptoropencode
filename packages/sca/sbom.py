@@ -232,7 +232,13 @@ def _build_vulnerabilities(
             analysis["detail"] = (
                 "module-level reachability: imported in non-test source"
             )
-        elif f.reachability.verdict == "not_reachable":
+        elif f.reachability.verdict in (
+            "not_reachable", "not_function_reachable",
+        ):
+            # ``not_function_reachable`` is "the dep is imported but
+            # the specific affected function isn't called" — same
+            # CycloneDX/VEX state as not_reachable (the vulnerable
+            # code isn't reached), with a more specific detail.
             analysis["state"] = "not_affected"
             analysis["justification"] = "code_not_reachable"
             analysis["detail"] = f.reachability.confidence.reason

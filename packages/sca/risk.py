@@ -116,8 +116,14 @@ def compute_risk_estimate(
     # 4. Reachability: confidently-not-reachable downgrades; uncertain
     # stays neutral; not_evaluated gets a small penalty.
     r = finding.reachability
-    if r.verdict == "not_reachable":
+    if r.verdict in ("not_reachable", "not_function_reachable"):
         # confidence.numeric is 0..1; max reduction at numeric=1.0.
+        # ``not_function_reachable`` uses the same downgrade as
+        # ``not_reachable``: both are "we have evidence the
+        # vulnerable code path isn't exercised". The function-level
+        # verdict is strictly stronger evidence (we know the dep IS
+        # imported but the specific affected function isn't called),
+        # so the confidence numeric does the work of distinguishing.
         conf_numeric = r.confidence.numeric or 0.0
         reach_mult = 1.0 - _REACH_NOT_REACHABLE_MAX_REDUCTION * conf_numeric
     elif r.verdict == "not_evaluated":

@@ -174,6 +174,25 @@ def scan(
                 cve_dep_keys=cve_dep_keys, http=http, cache=cache,
             )
 
+    # Function-level reachability tier (PyPI). Inventory-based
+    # resolver from ``core.inventory.reachability``. Gated on the
+    # presence of advisory-shipped affected-function data — when no
+    # PyPI dep has any, this is a no-op (no inventory build, no
+    # resolver imports). Runs after tier-3 wheel-fetch so it
+    # operates on the most upgraded set of verdicts.
+    if osv_results:
+        from .python_function_level import (
+            build_pypi_symbol_map,
+            refine_pypi_verdicts,
+        )
+        pypi_symbols = build_pypi_symbol_map(osv_results)
+        if pypi_symbols:
+            refine_pypi_verdicts(
+                deps_list, out,
+                target=target,
+                pypi_symbol_map=pypi_symbols,
+            )
+
     return out
 
 
