@@ -267,3 +267,68 @@ def test_run_sca_warm_cache_avoids_network_on_second_run(tmp_path: Path) -> None
     assert result.cache_hits > 0
     # Sanity: first run actually did network work.
     assert posts_first > 0 and gets_first > 0
+
+
+# ---------------------------------------------------------------------------
+# _find_previous_deps — PermissionError tolerance
+# ---------------------------------------------------------------------------
+
+
+def test_find_previous_deps_skips_unreadable_sibling(tmp_path: Path) -> None:
+    """When ``output_dir`` lives under a shared root like /tmp/, the
+    parent contains other operators' / system dirs that the SCA
+    process can't stat. _find_previous_deps must skip those rather
+    than abort the whole version-diff stage."""
+    from packages.sca.pipeline import _find_previous_deps
+
+    out_dir = tmp_path / "current-run"
+    out_dir.mkdir()
+    sibling_ok = tmp_path / "prior-run"
+    sibling_ok.mkdir()
+    (sibling_ok / "findings.json").write_text("[]")
+    sibling_blocked = tmp_path / "blocked-run"
+    sibling_blocked.mkdir()
+    (sibling_blocked / "findings.json").write_text("[]")
+    sibling_blocked.chmod(0o000)
+    try:
+        result = _find_previous_deps(out_dir)
+        assert result == sibling_ok / "findings.json"
+    finally:
+        sibling_blocked.chmod(0o755)
+
+
+def test_find_previous_deps_unreadable_parent_returns_none(
+    tmp_path: Path,
+) -> None:
+    """If even iter'ing the parent fails entirely, return None —
+    don't raise out."""
+    from packages.sca.pipeline import _find_previous_deps
+
+    blocked_parent = tmp_path / "blocked-parent"
+    blocked_parent.mkdir()
+    out_dir = blocked_parent / "current-run"
+    out_dir.mkdir()
+    blocked_parent.chmod(0o000)
+    try:
+        assert _find_previous_deps(out_dir) is None
+    finally:
+        blocked_parent.chmod(0o755)
+
+
+def test_find_previous_deps_returns_most_recent_by_mtime(
+    tmp_path: Path,
+) -> None:
+    import time
+    from packages.sca.pipeline import _find_previous_deps
+
+    out_dir = tmp_path / "current"
+    out_dir.mkdir()
+    older = tmp_path / "older"
+    older.mkdir()
+    (older / "findings.json").write_text("[]")
+    time.sleep(0.05)
+    newer = tmp_path / "newer"
+    newer.mkdir()
+    (newer / "findings.json").write_text("[]")
+    result = _find_previous_deps(out_dir)
+    assert result == newer / "findings.json"

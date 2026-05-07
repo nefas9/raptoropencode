@@ -575,6 +575,14 @@ def _run_llm_stages(
             client, canonical, supply_chain_findings, http, output_dir,
         )
         reviews_run += vd_count
+    except (PermissionError, FileNotFoundError, OSError) as e:
+        # OS-level failures during prior-run lookup aren't LLM
+        # failures — log distinctly so operators don't think the
+        # model errored.
+        logger.warning(
+            "sca.pipeline: version-diff stage skipped — couldn't "
+            "scan output_dir parent for prior runs: %s", e,
+        )
     except Exception:  # noqa: BLE001
         reviews_failed += 1
         logger.warning("sca.pipeline: version-diff LLM review failed",
@@ -726,21 +734,53 @@ def _run_version_diff_review(client, canonical, supply_chain_findings, http, out
 
 
 def _find_previous_deps(output_dir: Path) -> Optional[Path]:
-    """Locate the most recent sibling run's findings.json to extract dep versions."""
+    """Locate the most recent sibling run's findings.json to extract
+    dep versions.
+
+    Tolerates ``PermissionError`` on individual sibling dirs — when
+    ``output_dir`` lives under a shared root like ``/tmp/`` (operator
+    passed ``--out /tmp/sca-...``), other dirs in the parent (e.g.
+    root-owned ``systemd-private-...`` dirs) can't be stat'd by the
+    SCA process, and a single un-readable sibling shouldn't abort
+    the whole version-diff stage.
+    """
     parent = output_dir.parent  # e.g., projects/<name>/runs/ or out/
-    if not parent.is_dir():
+    try:
+        if not parent.is_dir():
+            return None
+    except PermissionError:
         return None
     candidates = []
-    for sibling in parent.iterdir():
-        if sibling == output_dir or not sibling.is_dir():
+    try:
+        siblings = list(parent.iterdir())
+    except PermissionError:
+        return None
+    for sibling in siblings:
+        if sibling == output_dir:
             continue
-        findings = sibling / "findings.json"
-        if findings.exists():
-            candidates.append(findings)
+        try:
+            if not sibling.is_dir():
+                continue
+            findings = sibling / "findings.json"
+            if findings.exists():
+                candidates.append(findings)
+        except PermissionError:
+            # Unreadable sibling (e.g. root-owned tmp dir) —
+            # silently skip; logged at debug for diagnostics.
+            logger.debug(
+                "sca.pipeline: skipping unreadable sibling %s",
+                sibling,
+            )
+            continue
     if not candidates:
         return None
-    # Most recent by mtime.
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    # Most recent by mtime — same PermissionError tolerance.
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except PermissionError:
+            return 0.0
+    candidates.sort(key=_mtime, reverse=True)
     return candidates[0]
 
 
