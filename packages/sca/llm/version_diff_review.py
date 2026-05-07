@@ -21,13 +21,13 @@ from __future__ import annotations
 import difflib
 import io
 import logging
-import tarfile
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from core.http import HttpClient
 from core.llm.task_types import TaskType
+from core.tar import extract_files_from_tar
 from ..models import Dependency
 from . import (
     StageResult,
@@ -316,24 +316,33 @@ def _extract_text_files(
 
 
 def _extract_tar(data: bytes, out: Dict[str, str]) -> None:
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
-        for member in tf.getmembers():
-            if not member.isfile() or member.size > _MAX_FILE_SIZE:
-                continue
-            suffix = Path(member.name).suffix.lower()
-            if suffix not in _TEXT_EXTENSIONS:
-                continue
-            f = tf.extractfile(member)
-            if f is None:
-                continue
-            try:
-                content = f.read().decode("utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
-                continue
-            # Strip the top-level directory prefix for cleaner diffs.
-            parts = Path(member.name).parts
-            rel = "/".join(parts[1:]) if len(parts) > 1 else member.name
-            out[rel] = content
+    """Pull text-source files out of a tar archive.
+
+    Tar walking + safety filtering is centralised in
+    :func:`core.tar.extract_files_from_tar`. Here we supply the
+    SCA-specific selector: filter by extension, strip the top-level
+    directory prefix that source distributions wrap their contents
+    in, and decode bytes → str.
+    """
+    def _select(member):
+        if Path(member.name).suffix.lower() not in _TEXT_EXTENSIONS:
+            return None
+        # Strip the top-level directory prefix for cleaner diffs
+        # (``pkg-1.0/setup.py`` → ``setup.py``).
+        parts = Path(member.name).parts
+        return "/".join(parts[1:]) if len(parts) > 1 else member.name
+
+    raw = extract_files_from_tar(
+        data,
+        selector=_select,
+        mode="r:*",
+        max_member_bytes=_MAX_FILE_SIZE,
+    )
+    for key, blob in raw.items():
+        try:
+            out[key] = blob.decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            continue
 
 
 def _extract_zip(data: bytes, out: Dict[str, str]) -> None:
