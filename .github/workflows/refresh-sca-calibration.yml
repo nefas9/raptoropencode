@@ -69,9 +69,29 @@ jobs:
         # CI = both gates.
         run: python -m packages.sca.calibration._license_check
 
+      - name: Validate corpus
+        # Run the validation harness against the freshly-refreshed
+        # corpus. Emits ``packages/sca/data/calibration/validation/
+        # <date>.json`` with top-N precision + Spearman ρ + verdict.
+        # The verdict (validated_v1 / unverified / needs_retune)
+        # gets read at runtime by risk.py to set the
+        # ``calibration_status`` field on each finding's risk
+        # components.
+        #
+        # Exit codes are informational here — the script returns 1
+        # when the corpus is below thresholds OR when there aren't
+        # enough samples yet for a verdict. Either way we want the
+        # PR to land carrying the report, so we don't gate on the
+        # exit. Operators read the report directly.
+        run: |
+          set +e
+          libexec/raptor-sca-validate-corpus
+          echo "validate exit: $?"
+
       - name: Diff?
         # ``git diff --quiet`` exits non-zero iff there are changes
-        # under the calibration data dir.
+        # under the calibration data dir (which now includes the
+        # validation report subtree).
         id: diff
         run: |
           if git diff --quiet -- packages/sca/data/calibration/; then

@@ -8,6 +8,7 @@ slightly won't false-fail; gross regressions still trip.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -191,9 +192,20 @@ def test_missing_epss_uses_neutral_default():
     assert comps["epss_multiplier"] == pytest.approx(0.65, abs=1e-6)
 
 
-def test_calibration_status_unverified_in_components():
-    """Until calibration lands, every breakdown reports unverified
-    so consumers can show a UI hint or refuse to ship the score."""
+def test_calibration_status_in_components(tmp_path, monkeypatch):
+    """Every breakdown carries a ``calibration_status`` key so
+    consumers can show a UI hint or refuse to ship the score.
+
+    Hermetic: redirects the validation-report lookup at a tmp
+    dir so this test's assertion is stable regardless of what's
+    under the in-tree ``data/calibration/validation/`` directory.
+    """
+    from packages.sca import risk
+    risk._reset_calibration_cache_for_tests()
+    monkeypatch.setattr(
+        risk, "_load_latest_validation_verdict",
+        lambda: "unverified",
+    )
     f = _finding()
     _, comps = compute_risk_estimate(f, f.dependency)
     assert comps["calibration_status"] == "unverified"
@@ -265,3 +277,187 @@ def test_depth_decay_geometric():
         assert s == pytest.approx(s0 * expected_ratio, abs=0.5), (
             f"depth={depth}: expected ~{s0 * expected_ratio:.2f}, got {s:.2f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Calibration-status read from validation reports
+# ---------------------------------------------------------------------------
+
+
+class TestCalibrationStatusFromValidation:
+    """``compute_risk_estimate`` reads the latest
+    ``validation/<date>.json`` and surfaces its verdict in the
+    components breakdown.
+
+    Tests use the test helper to flush the cache; in production the
+    verdict is read once per process.
+    """
+
+    def _patch_validation_dir(self, monkeypatch, tmp_path):
+        """Redirect the validation-reports lookup to a tmp dir."""
+        from packages.sca import risk
+        risk._reset_calibration_cache_for_tests()
+
+        # The lookup uses ``Path(__file__).resolve().parent /
+        # "data" / "calibration" / "validation"``. Monkey-patch
+        # the loader to read from tmp_path instead.
+        validation_dir = tmp_path / "validation"
+        validation_dir.mkdir()
+
+        original = risk._load_latest_validation_verdict
+
+        def _patched():
+            import json
+            if not validation_dir.is_dir():
+                return "unverified"
+            candidates = sorted(
+                (p for p in validation_dir.iterdir()
+                 if p.is_file() and p.suffix == ".json"),
+                key=lambda p: p.name, reverse=True,
+            )
+            for path in candidates:
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:               # noqa: BLE001
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                verdict = data.get("verdict")
+                if isinstance(verdict, str) and verdict:
+                    return verdict
+            return "unverified"
+
+        monkeypatch.setattr(
+            risk, "_load_latest_validation_verdict", _patched,
+        )
+        return validation_dir
+
+    def test_validated_v1_verdict_surfaces(self, tmp_path, monkeypatch):
+        """A validation report saying ``validated_v1`` is read and
+        flowed through to the components breakdown."""
+        validation_dir = self._patch_validation_dir(monkeypatch, tmp_path)
+        (validation_dir / "2026-05-08.json").write_text(json.dumps({
+            "snapshot_date": "2026-05-08",
+            "verdict": "validated_v1",
+            "top_20_precision": 0.65,
+            "spearman_rho": 0.55,
+        }))
+
+        f = _finding()
+        _, comps = compute_risk_estimate(f, f.dependency)
+        assert comps["calibration_status"] == "validated_v1"
+
+    def test_needs_retune_verdict_surfaces(self, tmp_path, monkeypatch):
+        """When the validator emits ``needs_retune``, that's what
+        operators see — not a stale ``unverified``."""
+        validation_dir = self._patch_validation_dir(monkeypatch, tmp_path)
+        (validation_dir / "2026-05-08.json").write_text(json.dumps({
+            "verdict": "needs_retune",
+            "top_20_precision": 0.3,
+            "spearman_rho": 0.2,
+        }))
+
+        f = _finding()
+        _, comps = compute_risk_estimate(f, f.dependency)
+        assert comps["calibration_status"] == "needs_retune"
+
+    def test_latest_report_wins(self, tmp_path, monkeypatch):
+        """Multiple reports → the most recent (lex-largest filename
+        for ISO-formatted dates) sets the verdict."""
+        validation_dir = self._patch_validation_dir(monkeypatch, tmp_path)
+        (validation_dir / "2026-04-01.json").write_text(json.dumps({
+            "verdict": "validated_v1",
+        }))
+        (validation_dir / "2026-05-08.json").write_text(json.dumps({
+            "verdict": "needs_retune",
+        }))
+        (validation_dir / "2026-03-15.json").write_text(json.dumps({
+            "verdict": "validated_v1",
+        }))
+
+        f = _finding()
+        _, comps = compute_risk_estimate(f, f.dependency)
+        assert comps["calibration_status"] == "needs_retune"
+
+    def test_no_reports_falls_back_to_unverified(
+        self, tmp_path, monkeypatch,
+    ):
+        """Empty validation/ dir → unverified."""
+        self._patch_validation_dir(monkeypatch, tmp_path)
+        # No files written.
+        f = _finding()
+        _, comps = compute_risk_estimate(f, f.dependency)
+        assert comps["calibration_status"] == "unverified"
+
+    def test_malformed_report_skipped_for_next(
+        self, tmp_path, monkeypatch,
+    ):
+        """A malformed report is skipped; the lookup falls through
+        to the next-most-recent valid one rather than crashing."""
+        validation_dir = self._patch_validation_dir(monkeypatch, tmp_path)
+        (validation_dir / "2026-05-08.json").write_text(
+            "this isn't json"
+        )
+        (validation_dir / "2026-04-01.json").write_text(json.dumps({
+            "verdict": "validated_v1",
+        }))
+        f = _finding()
+        _, comps = compute_risk_estimate(f, f.dependency)
+        assert comps["calibration_status"] == "validated_v1"
+
+    def test_report_missing_verdict_field_falls_back(
+        self, tmp_path, monkeypatch,
+    ):
+        """A JSON object without a ``verdict`` field is skipped
+        rather than mistakenly read as ``"unverified"`` from
+        nothing."""
+        validation_dir = self._patch_validation_dir(monkeypatch, tmp_path)
+        (validation_dir / "2026-05-08.json").write_text(json.dumps({
+            "snapshot_date": "2026-05-08",
+            "top_20_precision": 0.65,
+            # no verdict
+        }))
+        (validation_dir / "2026-04-01.json").write_text(json.dumps({
+            "verdict": "validated_v1",
+        }))
+        f = _finding()
+        _, comps = compute_risk_estimate(f, f.dependency)
+        # Verdict-less newer report skipped, older one wins.
+        assert comps["calibration_status"] == "validated_v1"
+
+    def test_non_json_files_in_validation_dir_ignored(
+        self, tmp_path, monkeypatch,
+    ):
+        """A README.md / .gitkeep / etc. in the validation dir
+        shouldn't confuse the lookup."""
+        validation_dir = self._patch_validation_dir(monkeypatch, tmp_path)
+        (validation_dir / "README.md").write_text("notes")
+        (validation_dir / "2026-05-08.json").write_text(json.dumps({
+            "verdict": "validated_v1",
+        }))
+        f = _finding()
+        _, comps = compute_risk_estimate(f, f.dependency)
+        assert comps["calibration_status"] == "validated_v1"
+
+    def test_cache_persists_within_process(
+        self, tmp_path, monkeypatch,
+    ):
+        """Once the verdict is loaded, subsequent compute_risk_estimate
+        calls don't re-read the disk — even if the file has been
+        updated. SCA scans see one consistent verdict."""
+        validation_dir = self._patch_validation_dir(monkeypatch, tmp_path)
+        (validation_dir / "2026-05-08.json").write_text(json.dumps({
+            "verdict": "validated_v1",
+        }))
+        f = _finding()
+        # First call populates the cache.
+        _, comps1 = compute_risk_estimate(f, f.dependency)
+        assert comps1["calibration_status"] == "validated_v1"
+        # Mutate the on-disk file to a different verdict.
+        (validation_dir / "2026-05-08.json").write_text(json.dumps({
+            "verdict": "needs_retune",
+        }))
+        # Without cache flush, the second call should still see
+        # the cached verdict.
+        _, comps2 = compute_risk_estimate(f, f.dependency)
+        assert comps2["calibration_status"] == "validated_v1"

@@ -27,7 +27,7 @@ dict, the 0-100 range, the sort order).
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .models import Dependency, VulnFinding
 
@@ -168,9 +168,103 @@ def compute_risk_estimate(
 
     final = max(_SCORE_MIN, min(_SCORE_MAX, base))
     components["final"] = final
-    components["calibration_status"] = "unverified"   # pending KEV corpus
+    components["calibration_status"] = _calibration_status()
 
     return final, components
+
+
+# ---------------------------------------------------------------------------
+# Calibration-status read
+# ---------------------------------------------------------------------------
+#
+# The calibration validation harness (run in CI by
+# ``refresh-sca-calibration.yml`` and
+# ``refresh-sca-project-samples.yml``) writes its verdict to
+# ``packages/sca/data/calibration/validation/<date>.json``. Each
+# finding's risk score then carries the latest verdict so operators
+# reading findings.json can tell whether the score is calibrated
+# against ground truth or not.
+#
+# Verdict values (per :class:`packages.sca.calibration.validate.
+# ValidationReport`):
+#   * ``"validated_v1"`` — top-20 precision ≥ threshold AND
+#     Spearman ρ ≥ threshold over the latest corpus
+#   * ``"needs_retune"`` — ran, fell below thresholds; weights need
+#     refitting
+#   * ``"unverified"`` — ran but insufficient samples, OR no
+#     validation report exists yet (cold start)
+#
+# Cached for the lifetime of the process: the validation file
+# doesn't change between findings within a single SCA run.
+
+
+_CALIBRATION_STATUS_CACHE: Optional[str] = None
+
+
+def _calibration_status() -> str:
+    """Read the latest validation verdict from disk.
+
+    Falls back to ``"unverified"`` when:
+      * No validation reports exist (cold start, e.g. tests in a
+        fresh checkout)
+      * The validation directory or report file is unreadable
+      * The latest report's JSON is malformed or missing the
+        ``verdict`` field
+
+    Cache is populated once and reused for the rest of the
+    process; SCA runs see one consistent verdict.
+    """
+    global _CALIBRATION_STATUS_CACHE
+    if _CALIBRATION_STATUS_CACHE is not None:
+        return _CALIBRATION_STATUS_CACHE
+    _CALIBRATION_STATUS_CACHE = _load_latest_validation_verdict()
+    return _CALIBRATION_STATUS_CACHE
+
+
+def _load_latest_validation_verdict() -> str:
+    """Pick the most-recent ``validation/<date>.json`` and return
+    its ``verdict`` field. Defensive against every plausible
+    failure — never raises."""
+    import json
+    from pathlib import Path
+    try:
+        validation_dir = (
+            Path(__file__).resolve().parent
+            / "data" / "calibration" / "validation"
+        )
+        if not validation_dir.is_dir():
+            return "unverified"
+        # ISO-formatted dates sort lexicographically, so sorting
+        # filenames descending picks the most recent. Skip non-
+        # JSON files defensively.
+        candidates = sorted(
+            (p for p in validation_dir.iterdir()
+             if p.is_file() and p.suffix == ".json"),
+            key=lambda p: p.name, reverse=True,
+        )
+        for path in candidates:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            verdict = data.get("verdict")
+            if isinstance(verdict, str) and verdict:
+                return verdict
+        # Directory exists but no usable report.
+        return "unverified"
+    except Exception:                                       # noqa: BLE001
+        # Defensive — any unanticipated error falls back to the
+        # honest "unverified" rather than crashing the SCA run.
+        return "unverified"
+
+
+def _reset_calibration_cache_for_tests() -> None:
+    """Test helper — flush the per-process calibration cache so
+    tests can vary the on-disk validation state across runs."""
+    global _CALIBRATION_STATUS_CACHE
+    _CALIBRATION_STATUS_CACHE = None
 
 
 __all__ = ["compute_risk_estimate"]
