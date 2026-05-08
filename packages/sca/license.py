@@ -395,12 +395,183 @@ def enrich_licenses(
                 if spdx:
                     d.declared_license = spdx
                     enriched += 1
+            elif d.ecosystem == "Cargo":
+                spdx = _fetch_crates_license(d.name, http=http, cache=cache)
+                if spdx:
+                    d.declared_license = spdx
+                    enriched += 1
+            elif d.ecosystem == "Maven" and d.version:
+                spdx = _fetch_maven_license(
+                    d.name, d.version, http=http, cache=cache,
+                )
+                if spdx:
+                    d.declared_license = spdx
+                    enriched += 1
         except Exception as e:                          # noqa: BLE001
             logger.debug(
                 "sca.license: enrichment failed for %s:%s (%s)",
                 d.ecosystem, d.name, e,
             )
     return enriched
+
+
+# ---------------------------------------------------------------------------
+# Cargo (crates.io)
+# ---------------------------------------------------------------------------
+
+
+def _fetch_crates_license(
+    name: str, *, http: Any, cache: Any,
+) -> Optional[str]:
+    """Cargo's crates.io API exposes the license SPDX directly:
+
+        https://crates.io/api/v1/crates/<name>
+
+    Response shape:
+        {"crate": {"name": "...", "license": "...", ...}, ...}
+
+    The crate-level license carries the latest version's value;
+    per-version differences are rare for Rust and not worth the
+    extra round-trip.
+    """
+    cache_key = f"crates-license:{name.lower()}"
+    if cache is not None:
+        cached = cache.get(cache_key, ttl_seconds=24 * 3600)
+        if cached is not None:
+            return cached or None
+    try:
+        url = f"https://crates.io/api/v1/crates/{name}"
+        data = http.get_json(url)
+    except Exception:                                   # noqa: BLE001
+        return None
+    crate = (data or {}).get("crate") or {}
+    spdx = crate.get("license") if isinstance(crate, dict) else None
+    if isinstance(spdx, str) and spdx.strip():
+        result = spdx.strip()
+    else:
+        result = None
+    if cache is not None:
+        cache.put(cache_key, result or "", ttl_seconds=24 * 3600)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Maven (POM at repo.maven.apache.org)
+# ---------------------------------------------------------------------------
+
+
+def _fetch_maven_license(
+    coord: str, version: str, *, http: Any, cache: Any,
+) -> Optional[str]:
+    """Fetch + parse a Maven artefact's POM and extract the
+    license element. Maven coords are ``groupId:artifactId``; the
+    POM URL composes them into a path.
+
+    Maven's ``<licenses>`` section gives free-text license names
+    (and sometimes URLs). We map common name strings to SPDX IDs
+    via :data:`_MAVEN_NAME_TO_SPDX`. Unknown names fall through to
+    ``None`` so the policy treats them as ``license_unknown``.
+    """
+    if ":" not in coord:
+        return None
+    cache_key = f"maven-license:{coord}@{version}"
+    if cache is not None:
+        cached = cache.get(cache_key, ttl_seconds=24 * 3600)
+        if cached is not None:
+            return cached or None
+
+    group_id, artifact_id = coord.split(":", 1)
+    group_path = group_id.replace(".", "/")
+    pom_url = (
+        f"https://repo.maven.apache.org/maven2/"
+        f"{group_path}/{artifact_id}/{version}/"
+        f"{artifact_id}-{version}.pom"
+    )
+    try:
+        body = http.get_bytes(pom_url, max_bytes=2 * 1024 * 1024)
+    except Exception:                                   # noqa: BLE001
+        if cache is not None:
+            cache.put(cache_key, "", ttl_seconds=24 * 3600)
+        return None
+
+    spdx = _spdx_from_pom(body)
+    if cache is not None:
+        cache.put(cache_key, spdx or "", ttl_seconds=24 * 3600)
+    return spdx
+
+
+def _spdx_from_pom(pom_bytes: bytes) -> Optional[str]:
+    """Parse a POM and extract the first license name, mapped to
+    SPDX. Uses ``defusedxml`` when available (XXE / billion-laughs
+    hardening), falls back to stdlib ``xml.etree.ElementTree``.
+    """
+    try:
+        try:
+            import defusedxml.ElementTree as ET    # type: ignore[import-not-found]
+        except ImportError:
+            import xml.etree.ElementTree as ET     # type: ignore[no-redef]
+        root = ET.fromstring(pom_bytes)
+    except Exception:                                   # noqa: BLE001
+        return None
+
+    # POMs use namespaced or non-namespaced element names; iterate
+    # and match on the local-name suffix.
+    def _local(tag: str) -> str:
+        return tag.split("}", 1)[-1]
+
+    for elem in root.iter():
+        if _local(elem.tag) != "license":
+            continue
+        for child in elem:
+            if _local(child.tag) == "name" and child.text:
+                spdx = _MAVEN_NAME_TO_SPDX.get(child.text.strip())
+                if spdx:
+                    return spdx
+                # Fallback: if the free-text already looks SPDX-like
+                # (single token, no spaces), accept it.
+                text = child.text.strip()
+                if " " not in text and len(text) < 40:
+                    return text
+                return None
+        break
+    return None
+
+
+# Mapping of common Maven license-element names to SPDX IDs. POMs
+# carry free-text names; this table covers the licenses that
+# appear most often in published OSS POMs.
+_MAVEN_NAME_TO_SPDX: Dict[str, str] = {
+    "The Apache Software License, Version 2.0": "Apache-2.0",
+    "Apache License, Version 2.0": "Apache-2.0",
+    "Apache 2.0": "Apache-2.0",
+    "Apache License 2.0": "Apache-2.0",
+    "MIT License": "MIT",
+    "MIT": "MIT",
+    "The MIT License": "MIT",
+    "BSD License": "BSD-3-Clause",
+    "BSD 3-Clause License": "BSD-3-Clause",
+    "BSD-3-Clause": "BSD-3-Clause",
+    "BSD 2-Clause License": "BSD-2-Clause",
+    "Eclipse Public License - v 1.0": "EPL-1.0",
+    "Eclipse Public License 1.0": "EPL-1.0",
+    "Eclipse Public License - v 2.0": "EPL-2.0",
+    "Eclipse Public License 2.0": "EPL-2.0",
+    "GNU Lesser General Public License, Version 2.1": "LGPL-2.1",
+    "GNU Lesser General Public License v2.1": "LGPL-2.1",
+    "GNU Lesser General Public License, Version 3.0": "LGPL-3.0",
+    "GNU General Public License, Version 2": "GPL-2.0",
+    "GNU General Public License, version 2 with the Classpath Exception":
+        "GPL-2.0-with-classpath-exception",
+    "GNU General Public License, Version 3": "GPL-3.0",
+    "Mozilla Public License Version 2.0": "MPL-2.0",
+    "Mozilla Public License, Version 2.0": "MPL-2.0",
+    "MPL 2.0": "MPL-2.0",
+    "ISC License": "ISC",
+    "Common Development and Distribution License (CDDL) v1.0": "CDDL-1.0",
+    "Common Development and Distribution License (CDDL) v1.1": "CDDL-1.1",
+    "The Unlicense": "Unlicense",
+    "Public Domain": "Unlicense",
+}
 
 
 def _spdx_from_pypi(meta: Optional[dict]) -> Optional[str]:

@@ -301,3 +301,194 @@ def test_enrich_licenses_skips_already_populated(monkeypatch):
     enriched = enrich_licenses(deps, http=_StubHttp())
     assert enriched == 0
     assert deps[0].declared_license == "MIT"
+
+
+# ---------------------------------------------------------------------------
+# Cargo enrichment via crates.io
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_cargo_via_crates_api():
+    from packages.sca.license import _fetch_crates_license
+
+    class _StubHttp:
+        def get_json(self, url):
+            assert url == "https://crates.io/api/v1/crates/serde"
+            return {
+                "crate": {"name": "serde", "license": "MIT OR Apache-2.0"},
+            }
+
+    spdx = _fetch_crates_license("serde", http=_StubHttp(), cache=None)
+    assert spdx == "MIT OR Apache-2.0"
+
+
+def test_enrich_cargo_handles_missing_license_field():
+    from packages.sca.license import _fetch_crates_license
+
+    class _StubHttp:
+        def get_json(self, url):
+            return {"crate": {"name": "x"}}
+
+    assert _fetch_crates_license("x", http=_StubHttp(), cache=None) is None
+
+
+def test_enrich_cargo_caches_result():
+    """Second lookup hits cache, not network."""
+    from packages.sca.license import _fetch_crates_license
+
+    calls = []
+
+    class _StubHttp:
+        def get_json(self, url):
+            calls.append(url)
+            return {"crate": {"license": "MIT"}}
+
+    class _Cache:
+        def __init__(self):
+            self._d = {}
+        def get(self, key, ttl_seconds=0):
+            return self._d.get(key)
+        def put(self, key, value, ttl_seconds=0):
+            self._d[key] = value
+
+    cache = _Cache()
+    _fetch_crates_license("serde", http=_StubHttp(), cache=cache)
+    _fetch_crates_license("serde", http=_StubHttp(), cache=cache)
+    assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Maven enrichment via POM XML
+# ---------------------------------------------------------------------------
+
+
+def test_spdx_from_pom_apache():
+    from packages.sca.license import _spdx_from_pom
+
+    pom = b"""<?xml version="1.0"?>
+    <project xmlns="http://maven.apache.org/POM/4.0.0">
+      <licenses>
+        <license>
+          <name>The Apache Software License, Version 2.0</name>
+        </license>
+      </licenses>
+    </project>"""
+    assert _spdx_from_pom(pom) == "Apache-2.0"
+
+
+def test_spdx_from_pom_mit():
+    from packages.sca.license import _spdx_from_pom
+
+    pom = b"""<project>
+      <licenses>
+        <license><name>MIT License</name></license>
+      </licenses>
+    </project>"""
+    assert _spdx_from_pom(pom) == "MIT"
+
+
+def test_spdx_from_pom_unknown_name_returns_none():
+    from packages.sca.license import _spdx_from_pom
+
+    pom = b"""<project>
+      <licenses>
+        <license><name>Some weird custom license name</name></license>
+      </licenses>
+    </project>"""
+    # Long unknown free-text isn't accepted as SPDX; returns None.
+    assert _spdx_from_pom(pom) is None
+
+
+def test_spdx_from_pom_no_license_element():
+    from packages.sca.license import _spdx_from_pom
+
+    pom = b"<project><groupId>x</groupId></project>"
+    assert _spdx_from_pom(pom) is None
+
+
+def test_spdx_from_pom_malformed_xml():
+    from packages.sca.license import _spdx_from_pom
+
+    assert _spdx_from_pom(b"not xml at all") is None
+
+
+def test_fetch_maven_license_constructs_pom_url():
+    from packages.sca.license import _fetch_maven_license
+
+    captured_url = []
+
+    class _StubHttp:
+        def get_bytes(self, url, max_bytes):
+            captured_url.append(url)
+            return b"""<project><licenses><license>
+                <name>MIT License</name>
+            </license></licenses></project>"""
+
+    spdx = _fetch_maven_license(
+        "com.fasterxml.jackson.core:jackson-databind",
+        "2.15.0", http=_StubHttp(), cache=None,
+    )
+    assert spdx == "MIT"
+    # URL should follow Maven Central layout: groupId-as-path.
+    assert captured_url[0] == (
+        "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/"
+        "jackson-databind/2.15.0/jackson-databind-2.15.0.pom"
+    )
+
+
+def test_fetch_maven_license_malformed_coord_returns_none():
+    from packages.sca.license import _fetch_maven_license
+
+    class _StubHttp:
+        def get_bytes(self, *a, **kw):
+            raise AssertionError("should not be called")
+
+    assert _fetch_maven_license(
+        "no-colon-in-name", "1.0", http=_StubHttp(), cache=None,
+    ) is None
+
+
+def test_enrich_licenses_dispatches_to_cargo():
+    """Integration: enrich_licenses calls the Cargo path for
+    Cargo deps."""
+    deps = [_dep(name="serde", version="1.0", ecosystem="Cargo")]
+
+    class _StubHttp:
+        def get_json(self, url):
+            return {"crate": {"license": "MIT OR Apache-2.0"}}
+
+    n = enrich_licenses(deps, http=_StubHttp())
+    assert n == 1
+    assert deps[0].declared_license == "MIT OR Apache-2.0"
+
+
+def test_enrich_licenses_dispatches_to_maven():
+    deps = [_dep(
+        name="org.springframework:spring-core",
+        version="5.3.0", ecosystem="Maven",
+    )]
+
+    class _StubHttp:
+        def get_bytes(self, url, max_bytes):
+            return b"""<project><licenses><license>
+                <name>Apache License, Version 2.0</name>
+            </license></licenses></project>"""
+
+    n = enrich_licenses(deps, http=_StubHttp())
+    assert n == 1
+    assert deps[0].declared_license == "Apache-2.0"
+
+
+def test_enrich_licenses_skips_maven_without_version():
+    """Maven enrichment requires a concrete version (POM URL
+    needs it). Unpinned deps fall through."""
+    deps = [_dep(
+        name="org.x:y", version=None, ecosystem="Maven",
+    )]
+
+    class _StubHttp:
+        def get_bytes(self, *a, **kw):
+            raise AssertionError("should not be called")
+
+    n = enrich_licenses(deps, http=_StubHttp())
+    assert n == 0
