@@ -141,27 +141,70 @@ class _Meta:
     # _DORMANT_DAYS.
 
 
+# Process-lifetime memo of the *extracted* ``_Meta`` keyed on
+# ``(ecosystem, name)``. The underlying ``JsonCache`` already
+# memoises the raw registry JSON; this layer caches the post-parse
+# shape so repeat consumers (typosquat, sentinel-names, version-
+# publish-recency, maintainer-change, low-bus-factor — five
+# detectors per dep) don't re-walk the same raw JSON 5× to
+# recompute identical ``first_publish`` / ``latest_publish`` /
+# ``maintainers`` / ``previous_maintainers`` values.
+#
+# pre-fix profile: ``_from_pypi`` consumed ~3.5s of a saleor scan
+# (548 calls × 6.4ms each — full ISO-8601 walk of every release's
+# files, plus maintainer aggregation). Each unique (ecosystem,
+# name) gets parsed once; subsequent ``_fetch`` calls in the same
+# run are dict lookups.
+#
+# Lock: ``scan_deps`` parallelises ``_fetch`` across 8 worker
+# threads (commit ac4932bf), so the memo is touched concurrently.
+# We use a threading.Lock to keep the read-then-store atomic;
+# duplicate parses from a check-then-set race are rare and
+# harmless (whichever thread wins the store overwrites with an
+# identical value).
+import threading as _threading
+_META_CACHE: Dict[tuple, Optional["_Meta"]] = {}
+_META_CACHE_LOCK = _threading.Lock()
+_META_CACHE_SENTINEL = object()
+
+
 def _fetch(
     dep: Dependency, *, pypi_client, npm_client,
 ) -> Optional[_Meta]:
+    key = (dep.ecosystem, dep.name)
+    with _META_CACHE_LOCK:
+        cached = _META_CACHE.get(key, _META_CACHE_SENTINEL)
+    if cached is not _META_CACHE_SENTINEL:
+        return cached  # type: ignore[return-value]
+
+    meta: Optional[_Meta] = None
     if dep.ecosystem == "PyPI" and pypi_client is not None:
         try:
             raw = pypi_client.get_metadata(dep.name)
         except Exception:  # noqa: BLE001
             logger.debug("registry_metadata: PyPI fetch error for %r",
                          dep.name, exc_info=True)
-            return None
-        return _from_pypi(raw) if raw else None
-    if dep.ecosystem == "npm" and npm_client is not None:
+            raw = None
+        meta = _from_pypi(raw) if raw else None
+    elif dep.ecosystem == "npm" and npm_client is not None:
         try:
             raw = npm_client.get_metadata(dep.name)
         except Exception:  # noqa: BLE001
             logger.debug("registry_metadata: npm fetch error for %r",
                          dep.name, exc_info=True)
-            return None
-        return _from_npm(raw) if raw else None
+            raw = None
+        meta = _from_npm(raw) if raw else None
     # Other ecosystems: no metadata source wired in this layer yet.
-    return None
+    with _META_CACHE_LOCK:
+        _META_CACHE[key] = meta
+    return meta
+
+
+def _reset_meta_cache_for_tests() -> None:
+    """Clear the per-run memo. Tests that exercise the parse path
+    repeatedly need to evict between cases."""
+    with _META_CACHE_LOCK:
+        _META_CACHE.clear()
 
 
 def _from_pypi(raw: dict) -> _Meta:

@@ -673,3 +673,52 @@ def test_single_version_no_dormancy() -> None:
     meta = _from_pypi(raw)
     assert meta.is_dormant is False
     assert meta.second_latest_publish is None
+
+
+# ---------------------------------------------------------------------------
+# Process-lifetime _Meta memo — repeat fetches for the same dep should
+# parse the raw JSON once
+# ---------------------------------------------------------------------------
+
+
+def test_meta_cache_avoids_reparse_for_same_dep():
+    """Multiple supply-chain detectors fetch metadata for the same
+    dep. The post-parse ``_Meta`` cache should serve later calls
+    from memory instead of re-walking the raw JSON."""
+    from packages.sca.supply_chain.registry_metadata import (
+        _fetch, _from_pypi as _orig_from_pypi,
+    )
+    from packages.sca.supply_chain import registry_metadata as rm
+
+    class _CountingPyPI:
+        def __init__(self):
+            self.calls = 0
+        def get_metadata(self, name):
+            self.calls += 1
+            return {
+                "info": {"name": name, "author": "x"},
+                "releases": {"1.0.0": [{"upload_time_iso_8601":
+                                          "2023-01-01T00:00:00Z"}]},
+            }
+
+    parse_calls = {"n": 0}
+    def counting_from_pypi(raw):
+        parse_calls["n"] += 1
+        return _orig_from_pypi(raw)
+    rm._from_pypi = counting_from_pypi
+    try:
+        client = _CountingPyPI()
+        dep = _dep(name="foo")
+        # 5 fetches → 1 client call, 1 parse, 4 cache hits.
+        for _ in range(5):
+            _fetch(dep, pypi_client=client, npm_client=None)
+        assert client.calls == 1, (
+            f"client called {client.calls} times; cache is not "
+            f"keeping later fetches off the wire"
+        )
+        assert parse_calls["n"] == 1, (
+            f"_from_pypi ran {parse_calls['n']} times; cache is not "
+            f"keeping the parse off the hot path"
+        )
+    finally:
+        rm._from_pypi = _orig_from_pypi
