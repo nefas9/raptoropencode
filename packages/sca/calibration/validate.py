@@ -168,10 +168,17 @@ def validate_corpus(
 
 
 def _load_ground_truth(corpus_dir: Path) -> Set[str]:
-    """Union of CVE IDs that have ANY exploitation signal."""
+    """Union of CVE IDs that have ANY exploitation signal.
+
+    All four sources mirror what ``refit._load_ground_truth`` reads.
+    Pre-fix this loader skipped ``github_poc_signals.json`` even
+    though the file ships in the corpus and refit consumes it —
+    silent drift between validate's exploited-set and refit's would
+    have skewed the precision metric vs the metric refit optimises.
+    """
     exploited: Set[str] = set()
     for fname in ("kev_signals.json", "exploitdb_signals.json",
-                   "metasploit_signals.json"):
+                   "metasploit_signals.json", "github_poc_signals.json"):
         path = corpus_dir / fname
         if not path.is_file():
             continue
