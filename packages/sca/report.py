@@ -337,11 +337,29 @@ def _render_vuln_section(findings: Sequence[VulnFinding]) -> str:
     on each version gets one section, with sources listed
     underneath. Distinct advisories on the same version stay
     separate (different CVEs are different findings).
+
+    Outer grouping by ``(name, version)`` lets us emit dep-level
+    lines (Source / Direct / Reachability / Version-match /
+    Parser) ONCE per dep — for a dep with N advisories this saves
+    ``5 * (N-1)`` repeated lines (django at N=14 saves 65 lines).
+    The first advisory in each dep-group renders full; subsequent
+    advisories pass ``omit_dep_shared=True`` to skip those lines.
     """
     lines: List[str] = ["## Vulnerable dependencies\n"]
     groups = _group_vulns(findings)
+    # Track which (name, version) deps we've already emitted a
+    # full dep-level header for; subsequent advisories on the same
+    # dep render in compact form.
+    seen_dep_keys: set = set()
     for group in groups:
-        lines.append(_render_one_vuln_group(group))
+        primary = group[0]
+        dep_key = (primary.dependency.name,
+                    primary.dependency.version or "")
+        is_first_for_dep = dep_key not in seen_dep_keys
+        seen_dep_keys.add(dep_key)
+        lines.append(_render_one_vuln_group(
+            group, omit_dep_shared=not is_first_for_dep,
+        ))
     return "\n".join(lines)
 
 
@@ -366,7 +384,10 @@ def _group_vulns(
     return [groups[k] for k in order]
 
 
-def _render_one_vuln_group(group: Sequence[VulnFinding]) -> str:
+def _render_one_vuln_group(
+    group: Sequence[VulnFinding], *,
+    omit_dep_shared: bool = False,
+) -> str:
     """Render a vuln finding group: one section per (dep, advisory),
     with each manifest source listed in a Sources sub-list.
 
@@ -375,11 +396,22 @@ def _render_one_vuln_group(group: Sequence[VulnFinding]) -> str:
     source groups replace that single line with a "Sources (N):"
     bullet plus a nested list of paths. The threshold is on
     distinct paths, not on group size — N findings that all share
-    one declared_in path stay as a single Source line."""
+    one declared_in path stay as a single Source line.
+
+    ``omit_dep_shared``: when True, skips dep-level lines
+    (Source / Direct / Reachability / Version-match / Parser)
+    because the operator already saw them on a previous advisory
+    section for the same dep+version. Wired by
+    ``_render_vuln_section``'s outer grouping pass.
+    """
     primary = group[0]
     paths = sorted({str(f.dependency.declared_in) for f in group})
-    body = _render_one_vuln(primary, omit_source=len(paths) > 1)
-    if len(paths) <= 1:
+    body = _render_one_vuln(
+        primary,
+        omit_source=len(paths) > 1 or omit_dep_shared,
+        omit_dep_shared=omit_dep_shared,
+    )
+    if omit_dep_shared or len(paths) <= 1:
         return body
     src_lines = [f"- Sources ({len(paths)}):"]
     for p in paths:
@@ -390,7 +422,11 @@ def _render_one_vuln_group(group: Sequence[VulnFinding]) -> str:
     return head + "\n" + "\n".join(src_lines) + "\n" + rest
 
 
-def _render_one_vuln(f: VulnFinding, *, omit_source: bool = False) -> str:
+def _render_one_vuln(
+    f: VulnFinding, *,
+    omit_source: bool = False,
+    omit_dep_shared: bool = False,
+) -> str:
     dep = f.dependency
     primary: Optional[Advisory] = f.advisories[0] if f.advisories else None
     label = _SEV_LABEL.get(f.severity, f.severity.title())
@@ -463,43 +499,71 @@ def _render_one_vuln(f: VulnFinding, *, omit_source: bool = False) -> str:
                 bullets.append(
                     f"- Base image: `{image}`{stage_part}"
                 )
-    # Non-``main`` scope is significant for Dockerfile multi-stage
-    # builds: emphasise so operators triage runtime/builder distinctly.
-    scope_part = (
-        f"scope: **`{dep.scope}`** stage"
-        if dep.scope and dep.scope != "main"
-        else f"scope: {dep.scope}"
-    )
-    bullets.append(f"- Direct: {'yes' if dep.direct else 'no'}; "
-                   f"{scope_part}; pin: {dep.pin_style.value}")
+    # Dep-level lines (Direct / scope / Reachability / Version-
+    # match / Parser) are identical for every advisory on the same
+    # ``(name, version)``. The first advisory in each dep-group
+    # renders them; subsequent ones pass ``omit_dep_shared=True``
+    # — operator already absorbed the dep context, repeating it
+    # is visual noise that scales O(N_advisories).
+    if not omit_dep_shared:
+        # Non-``main`` scope is significant for Dockerfile multi-stage
+        # builds: emphasise so operators triage runtime/builder distinctly.
+        scope_part = (
+            f"scope: **`{dep.scope}`** stage"
+            if dep.scope and dep.scope != "main"
+            else f"scope: {dep.scope}"
+        )
+        bullets.append(f"- Direct: {'yes' if dep.direct else 'no'}; "
+                       f"{scope_part}; pin: {dep.pin_style.value}")
 
-    reach_reason = f.reachability.confidence.reason
-    reach_line = (f"- Reachability: {f.reachability.verdict} "
-                   f"(confidence {f.reachability.confidence.level}"
-                   + (f" — {escape_nonprintable(reach_reason)}"
-                      if reach_reason else "")
-                   + ")")
-    bullets.append(reach_line)
+        reach_reason = f.reachability.confidence.reason
+        reach_line = (f"- Reachability: {f.reachability.verdict} "
+                       f"(confidence {f.reachability.confidence.level}"
+                       + (f" — {escape_nonprintable(reach_reason)}"
+                          if reach_reason else "")
+                       + ")")
+        bullets.append(reach_line)
 
-    # Inline-confidence display: the design specifies that operators
-    # should see at a glance whether a finding is rock-solid (`high`
-    # everywhere) or uncertain (`low — Gradle DSL parser is heuristic`).
-    vmc_reason = f.version_match_confidence.reason
-    bullets.append(
-        f"- Version match: {f.version_match_confidence.level}"
-        + (f" — {escape_nonprintable(vmc_reason)}"
-           if vmc_reason else "")
-    )
-    pc_reason = dep.parser_confidence.reason
-    bullets.append(
-        f"- Parser: {dep.parser_confidence.level}"
-        + (f" — {escape_nonprintable(pc_reason)}"
-           if pc_reason else "")
-    )
+        # Inline-confidence display: the design specifies that operators
+        # should see at a glance whether a finding is rock-solid (`high`
+        # everywhere) or uncertain (`low — Gradle DSL parser is heuristic`).
+        vmc_reason = f.version_match_confidence.reason
+        bullets.append(
+            f"- Version match: {f.version_match_confidence.level}"
+            + (f" — {escape_nonprintable(vmc_reason)}"
+               if vmc_reason else "")
+        )
+        pc_reason = dep.parser_confidence.reason
+        bullets.append(
+            f"- Parser: {dep.parser_confidence.level}"
+            + (f" — {escape_nonprintable(pc_reason)}"
+               if pc_reason else "")
+        )
 
     if primary and primary.references:
+        # Triage-priority order: GHSA / NVD-style advisory pages
+        # first, then everything else. Operators chasing a CVE
+        # almost always want the canonical advisory page over a
+        # commit URL — current upstream ordering often leads with
+        # commits which buries the useful link. Cap at 2 (down
+        # from 3) — the third link was rarely informative and
+        # typically pushed the advisory section past the fold.
+        def _ref_priority(url: str) -> int:
+            u = url.lower()
+            if "/advisories/ghsa-" in u or "/security-advisories/" in u:
+                return 0
+            if "nvd.nist.gov" in u or "cve.org" in u or "cve.mitre.org" in u:
+                return 1
+            if "/security/" in u or "/advisory" in u:
+                return 2
+            if "/issues/" in u or "/pull/" in u:
+                return 3
+            if "/commit/" in u or "/commits/" in u:
+                return 5  # commits last — usually noise during triage
+            return 4
+        sorted_refs = sorted(primary.references, key=_ref_priority)
         refs = ", ".join(f"<{escape_nonprintable(r)}>"
-                          for r in primary.references[:3])
+                          for r in sorted_refs[:2])
         bullets.append(f"- References: {refs}")
 
     detail = (primary.details if primary else "") or ""
@@ -524,7 +588,12 @@ def _badges(f: VulnFinding) -> List[str]:
         out.append(f"CVSS {f.cvss_score:.1f}")
     if f.in_kev:
         out.append("**KEV**")
-    if f.epss is not None:
+    # Suppress EPSS values < 0.01 — operators use EPSS to triage
+    # *which* mediums to fix first, so a "EPSS 0.00" badge is noise
+    # that makes every report row visually heavier without
+    # informing the decision. Threshold matches the precision the
+    # report would otherwise display (0.01).
+    if f.epss is not None and f.epss >= 0.01:
         out.append(f"EPSS {f.epss:.2f}")
     return out
 

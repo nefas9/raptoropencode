@@ -515,6 +515,106 @@ def test_single_source_section_unchanged():
     assert "- Source: `/repo/only.txt`" in md
 
 
+def test_dep_shared_lines_emitted_only_for_first_advisory() -> None:
+    """Same (name, version) with N advisories should emit dep-level
+    lines (Direct / Reachability / Version-match / Parser) only on
+    the FIRST advisory section. Subsequent sections render compact
+    — the operator already absorbed the dep context.
+
+    Regression target: pre-fix django with 14 advisories repeated
+    5 dep-level lines × 14 advisories = 70 lines of which 65 were
+    redundant.
+    """
+    d = _dep()
+    adv_a = _adv("GHSA-A", "high", 7.5)
+    adv_a.aliases = ["CVE-2099-AAAA"]
+    adv_b = _adv("GHSA-B", "high", 7.6)
+    adv_b.aliases = ["CVE-2099-BBBB"]
+    adv_c = _adv("GHSA-C", "medium", 5.5)
+    adv_c.aliases = ["CVE-2099-CCCC"]
+    findings = build_vuln_findings(
+        [d], [OsvResult(d.key(), [adv_a, adv_b, adv_c])],
+    )
+    md = render_markdown_report(
+        target=Path("/x"), deps_analysed=1,
+        vuln_findings=findings, hygiene_findings=[],
+    )
+    # The "Direct: yes" line should appear exactly ONCE — under the
+    # first advisory — not once per advisory.
+    assert md.count("- Direct: yes") == 1
+    assert md.count("- Version match: high") == 1
+    assert md.count("- Reachability:") == 1
+    # Sanity: all three CVE sections are still in the report.
+    assert "CVE-2099-AAAA" in md
+    assert "CVE-2099-BBBB" in md
+    assert "CVE-2099-CCCC" in md
+
+
+def test_zero_epss_suppressed_in_badges() -> None:
+    """``EPSS 0.00`` carries zero triage signal; suppress the
+    badge so reports don't drown high-EPSS findings in low-EPSS
+    visual noise. Threshold is 0.01 — anything that rounds to
+    ``0.00`` is dropped."""
+    d = _dep()
+    adv = _adv("GHSA-low-epss", "high", 7.5)
+    adv.aliases = ["CVE-2099-LOW"]
+    findings = build_vuln_findings([d], [OsvResult(d.key(), [adv])])
+    # Set epss=0.0 explicitly (build_vuln_findings doesn't populate
+    # without a KEV/EPSS client).
+    findings[0].epss = 0.0
+    md = render_markdown_report(
+        target=Path("/x"), deps_analysed=1,
+        vuln_findings=findings, hygiene_findings=[],
+    )
+    assert "EPSS" not in md, "EPSS=0.0 should not appear as a badge"
+
+
+def test_high_epss_still_shown() -> None:
+    """Above-threshold EPSS still surfaces (regression guard for
+    over-eager suppression)."""
+    d = _dep()
+    adv = _adv("GHSA-high-epss", "high", 7.5)
+    adv.aliases = ["CVE-2099-HIGH"]
+    findings = build_vuln_findings([d], [OsvResult(d.key(), [adv])])
+    findings[0].epss = 0.42
+    md = render_markdown_report(
+        target=Path("/x"), deps_analysed=1,
+        vuln_findings=findings, hygiene_findings=[],
+    )
+    assert "EPSS 0.42" in md
+
+
+def test_references_prefer_advisory_pages_over_commits() -> None:
+    """The pre-fix order surfaced commit URLs first because that's
+    what OSV often returns first. Operators triaging want the
+    advisory page (NVD / GHSA) — re-prioritise so commit URLs
+    fall to the bottom and only the top 2 render."""
+    d = _dep()
+    adv = _adv("GHSA-ref-order", "high", 7.5)
+    adv.aliases = ["CVE-2099-REF"]
+    # Commits first (the noisy form); NVD buried at end.
+    adv.references = [
+        "https://github.com/foo/bar/commit/aaaaaaaa",
+        "https://github.com/foo/bar/commit/bbbbbbbb",
+        "https://github.com/foo/bar/commit/cccccccc",
+        "https://nvd.nist.gov/vuln/detail/CVE-2099-REF",
+    ]
+    findings = build_vuln_findings([d], [OsvResult(d.key(), [adv])])
+    md = render_markdown_report(
+        target=Path("/x"), deps_analysed=1,
+        vuln_findings=findings, hygiene_findings=[],
+    )
+    refs_line = next(
+        (l for l in md.splitlines() if l.startswith("- References:")),
+        None,
+    )
+    assert refs_line is not None
+    # NVD must be present; at most one commit (we cap at 2 refs).
+    assert "nvd.nist.gov" in refs_line
+    commit_count = refs_line.count("/commit/")
+    assert commit_count <= 1, refs_line
+
+
 def test_advisory_text_with_ansi_or_bidi_is_sanitised() -> None:
     """OSV-supplied advisory text could carry ANSI escapes or BIDI
     overrides; the renderer must strip them so the markdown is safe to
