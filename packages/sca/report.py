@@ -44,6 +44,19 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
 from core.security.log_sanitisation import escape_nonprintable
+from core.security.prompt_output_sanitise import sanitise_string
+
+# Per-finding detail strings can interpolate genuinely-untrusted
+# content — supply-chain findings include ``script_body`` from npm
+# install hooks (attacker-controlled), license findings include
+# SPDX-shaped strings sourced from registry metadata, hygiene
+# findings include dep names from manifests. Markdown autofetch
+# markup (``![](url)``) is the concern ``escape_nonprintable`` alone
+# misses; ``sanitise_string`` adds the defang on top of ANSI/BIDI/
+# control-byte escaping. Cap matches SARIF/SBOM emitters (2000 chars
+# allows legitimate multi-paragraph detail; adversarial massive
+# strings get a Unicode ellipsis).
+_DETAIL_MAX_CHARS = 2000
 
 from .findings import severity_rank
 from .models import (
@@ -151,7 +164,9 @@ def _render_license_section(findings) -> str:
         )
         lines.append(f"- License: `{spdx}`")
         lines.append(f"- Severity: **{f.severity}**")
-        lines.append(f"- Detail: {f.detail}")
+        lines.append(
+            f"- Detail: {sanitise_string(f.detail, max_chars=_DETAIL_MAX_CHARS)}"
+        )
         lines.append(f"- Source: `{dep.declared_in}`")
         lines.append("")
     return "\n".join(lines)
@@ -592,7 +607,9 @@ def _render_one_kinded_group(group: Sequence) -> str:
         ):
             best_conf = f.confidence
 
-    bullets = [f"- Detail: {escape_nonprintable(primary.detail)}"]
+    bullets = [
+        f"- Detail: {sanitise_string(primary.detail, max_chars=_DETAIL_MAX_CHARS)}"
+    ]
     # Switch to a list when there are MULTIPLE distinct source
     # paths. A group of N findings that all share one declared_in
     # path (duplicate findings the emitter happened to produce

