@@ -344,7 +344,14 @@ def fetch_image_sbom(
     try:
         manifest_resp = client.fetch_manifest(ref)
     except Exception as e:                          # noqa: BLE001
-        logger.warning(
+        # DEBUG, not WARNING: per-image fetch failures are routine
+        # when scanning multi-image-source projects — private
+        # registries, missing tags, anonymous-pull rate limits, and
+        # 302 redirects we don't follow are expected categories.
+        # Logging at WARNING dumped 60+ lines on istio's 87-image
+        # tree. The empty SBOM the caller gets is the actionable
+        # signal; per-image diagnostics belong in --verbose.
+        logger.debug(
             "sca.dockerfile_from: failed to fetch manifest for %s: %s",
             image, e,
         )

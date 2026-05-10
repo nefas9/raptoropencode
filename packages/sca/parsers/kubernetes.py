@@ -86,7 +86,16 @@ def parse(path: Path) -> List[Dependency]:
         # Multi-document YAML — common for ``manifests/`` bundles.
         documents = list(safe_load_all(text))
     except yaml.YAMLError as e:
-        logger.warning(
+        # DEBUG, not WARNING: the kubernetes parser is content-sniffing
+        # every ``.yml`` / ``.yaml`` in the tree, since file extension
+        # alone can't distinguish K8s manifests from arbitrary YAML
+        # (Helm templates, OpenAPI specs, GitHub Actions workflows,
+        # test fixtures with custom YAML tags). Most YAMLs fail this
+        # parse and that's expected — the dispatcher just treats them
+        # as non-K8s. Logging at WARNING dumped 100s of unactionable
+        # lines on istio (900 YAMLs) and manageiq (Ruby YAML with
+        # ``!ruby/object`` tags).
+        logger.debug(
             "sca.parsers.kubernetes: YAML parse failed for %s: %s",
             path, e,
         )
