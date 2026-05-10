@@ -1034,7 +1034,7 @@ _INLINE_INSTALL_CMD_RES = {
         re.IGNORECASE),
     "Homebrew": re.compile(r"\bbrew\s+install\b", re.IGNORECASE),
     "Go": re.compile(r"\bgo\s+install\b", re.IGNORECASE),
-    "crates.io": re.compile(r"\bcargo\s+install\b", re.IGNORECASE),
+    "Cargo": re.compile(r"\bcargo\s+install\b", re.IGNORECASE),
     "RubyGems": re.compile(r"\bgem\s+install\b", re.IGNORECASE),
     # ``dotnet add package <name> --version <X>`` /
     # ``nuget install <name> -Version <X>`` /
@@ -1350,7 +1350,7 @@ _INLINE_SUB_FNS: Dict[str, Any] = {
     "npm": _inline_sub_at_separated,
     "Homebrew": _inline_sub_at_separated,
     "Go": _inline_sub_at_separated,
-    "crates.io": _inline_sub_cargo,
+    "Cargo": _inline_sub_cargo,
     "RubyGems": _inline_sub_gem,
     "NuGet": _inline_sub_nuget,
     "Packagist": _inline_sub_composer,

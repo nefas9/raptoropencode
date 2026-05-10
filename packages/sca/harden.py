@@ -162,7 +162,7 @@ def main(argv: Sequence[str]) -> int:
     registries = {
         "PyPI": PyPIClient(http, cache, offline=args.offline),
         "npm": NpmClient(http, cache, offline=args.offline),
-        "crates.io": CratesClient(http, cache, offline=args.offline),
+        "Cargo": CratesClient(http, cache, offline=args.offline),
         "RubyGems": RubyGemsClient(http, cache, offline=args.offline),
         "Go": GoClient(http, cache, offline=args.offline),
         "Maven": MavenClient(http, cache, offline=args.offline),

@@ -452,7 +452,7 @@ def test_get_resolver_returns_resolver_for_known_ecosystem() -> None:
         "Maven":    "MavenResolver",     # not Gradle (string-compare since
                                           # we don't import the class above)
         "Go":       GoResolver,
-        "crates.io":   "CargoResolver",
+        "Cargo":       "CargoResolver",
         "RubyGems":    "BundlerResolver",
         "NuGet":       "NugetResolver",
         "Packagist":   "ComposerResolver",

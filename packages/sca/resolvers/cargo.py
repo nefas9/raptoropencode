@@ -37,7 +37,13 @@ logger = logging.getLogger(__name__)
 class CargoResolver:
     """``cargo update`` (in a temp copy) wrapper."""
 
-    ecosystem = "crates.io"
+    # Internal canonical name is ``"Cargo"`` (matches Cargo.toml /
+    # Cargo.lock filenames + the rest of SCA's naming pattern). OSV
+    # uses ``"crates.io"`` and that translation lives in osv.py at
+    # the query boundary; the resolver layer should NOT pre-emptively
+    # use the OSV name — doing so causes get_resolver("Cargo") to
+    # return None and silently skip Cargo cascade.
+    ecosystem = "Cargo"
     MANIFEST_FILES = ("Cargo.toml", "Cargo.lock")
     @property
     def proxy_hosts(self) -> list:

@@ -228,7 +228,7 @@ def test_tier3_skipped_for_non_pypi_ecosystems(tmp_path, monkeypatch):
         "packages.sca.python_modules.resolve_modules", track,
     )
 
-    cargo_dep = _dep("serde", ecosystem="crates.io", version="1.0")
+    cargo_dep = _dep("serde", ecosystem="Cargo", version="1.0")
     cve_keys = {cargo_dep.key()}
     scan(
         repo, [cargo_dep],

@@ -229,7 +229,7 @@ def test_multiline_only_updates_install_lines() -> None:
 
 def test_cargo_pinned_version_flag() -> None:
     text = "RUN cargo install ripgrep --version 14.1.0\n"
-    plan = _plan("crates.io", "ripgrep", "14.2.0")
+    plan = _plan("Cargo", "ripgrep", "14.2.0")
     new, hit, _ = _rewrite_inline_install(text, plan)
     assert hit is True
     assert "--version 14.2.0" in new
@@ -238,7 +238,7 @@ def test_cargo_pinned_version_flag() -> None:
 
 def test_cargo_unpinned_appends_version_flag() -> None:
     text = "RUN cargo install ripgrep\n"
-    plan = _plan("crates.io", "ripgrep", "14.2.0")
+    plan = _plan("Cargo", "ripgrep", "14.2.0")
     new, hit, _ = _rewrite_inline_install(text, plan)
     assert hit is True
     assert "ripgrep --version 14.2.0" in new
@@ -246,7 +246,7 @@ def test_cargo_unpinned_appends_version_flag() -> None:
 
 def test_cargo_short_vers_flag() -> None:
     text = "RUN cargo install ripgrep --vers 14.1.0\n"
-    plan = _plan("crates.io", "ripgrep", "14.2.0")
+    plan = _plan("Cargo", "ripgrep", "14.2.0")
     new, hit, _ = _rewrite_inline_install(text, plan)
     assert hit is True
     assert "--vers 14.2.0" in new

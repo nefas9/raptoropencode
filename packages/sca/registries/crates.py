@@ -26,7 +26,9 @@ _DEFAULT_TTL = 24 * 3600
 class CratesClient:
     """List versions from crates.io."""
 
-    ecosystem = "crates.io"
+    # Internal canonical name; OSV-side translation (``Cargo`` →
+    # ``crates.io``) lives at the OSV query boundary, not here.
+    ecosystem = "Cargo"
 
     def __init__(
         self,

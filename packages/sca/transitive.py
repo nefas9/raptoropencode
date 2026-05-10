@@ -624,7 +624,7 @@ def _try_metadata_walk(
 _CASCADE_LOCKFILE_NAMES: Dict[str, str] = {
     "PyPI": "requirements.txt",        # pip-compile output is a pinned reqs
     "npm": "package-lock.json",
-    "crates.io": "Cargo.lock",
+    "Cargo": "Cargo.lock",
     "Go": "go.sum",
     "RubyGems": "Gemfile.lock",
     "Packagist": "composer.lock",
@@ -646,7 +646,7 @@ def _import_lockfile_parser(ecosystem: str) -> Optional[Callable]:
     if ecosystem == "npm":
         from .parsers.package_lock_json import parse as _parse
         return _parse
-    if ecosystem == "crates.io":
+    if ecosystem == "Cargo":
         from .parsers.cargo import parse_lockfile as _parse
         return _parse
     if ecosystem == "Go":

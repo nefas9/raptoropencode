@@ -559,7 +559,7 @@ def test_cargo_install_with_version(tmp_path: Path) -> None:
                "Dockerfile")
     deps = parse_dockerfile(p)
     assert len(deps) == 1
-    assert deps[0].ecosystem == "crates.io"
+    assert deps[0].ecosystem == "Cargo"
     assert deps[0].name == "ripgrep"
     assert deps[0].version == "14.1.0"
     assert deps[0].purl == "pkg:cargo/ripgrep@14.1.0"

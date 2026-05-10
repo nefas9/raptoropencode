@@ -593,7 +593,7 @@ _MANAGERS: List[_PkgManager] = [
     ),
     _PkgManager(
         pattern=re.compile(r"\bcargo\s+install\b", re.IGNORECASE),
-        ecosystem="crates.io",
+        ecosystem="Cargo",
         purl_type="cargo",
         purl_namespace=None,
         parse_args=_parse_cargo_args,
