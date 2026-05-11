@@ -289,7 +289,7 @@ def _canonicalise_name(name: str, ecosystem: str) -> str:
 def parse_dockerfile(path: Path) -> List[Dependency]:
     """Extract installs from a Dockerfile / Containerfile.
 
-    Two-pass design:
+    Three-pass design:
 
     1. **apt / Debian** via ``core.dockerfile.extract_apt_packages``.
        The shared substrate is POSIX-correct (shlex tokenisation,
@@ -298,15 +298,30 @@ def parse_dockerfile(path: Path) -> List[Dependency]:
     2. **All other managers** (pip / yum / dnf / apk / npm / cargo /
        gem / brew / go) via the legacy regex-based shell scanner,
        with apt skipped to avoid duplicates.
+    3. **ARG version pins** via ``_arg_version_pins.extract``. The
+       canonical example is a devcontainer Dockerfile pinning
+       ``ARG SEMGREP_VERSION=1.117.0`` for build-time install.
+       The extractor maps a small set of well-known ARG names to
+       their SCA ecosystem; operator-supplied inline comments
+       (``# raptor-sca: PyPI:foo``) override the built-in map.
 
-    The two passes return ``Dependency`` rows with the same
-    ``source_kind="dockerfile"``; downstream pipeline treats them
-    uniformly.
+    All three passes return ``Dependency`` rows; downstream
+    pipeline treats them uniformly. ARG pins carry
+    ``source_kind="dockerfile_arg"`` and ``scope="build"`` so the
+    operator can tell them apart from runtime app deps.
     """
     text = _safe_read(path)
     if text is None:
         return []
     deps: List[Dependency] = []
+    # ARG pins first: when a Dockerfile both pins ``ARG FOO_VERSION=1.0``
+    # AND has ``RUN pip install foo==${FOO_VERSION}``, the RUN scanner
+    # emits ``foo@${FOO_VERSION}`` (literal placeholder string) and
+    # ``select_canonical_for_osv`` picks the first manifest row per
+    # ``(eco, name)``. Putting the ARG pass first means the concrete
+    # version (``1.0``) wins and the placeholder row is deduped out.
+    from . import _arg_version_pins
+    deps.extend(_arg_version_pins.extract(text, path))
     deps.extend(_extract_apt_via_core_dockerfile(text, path))
     runs = _extract_dockerfile_run_blocks(text)
     deps.extend(_scan_shell_lines(
