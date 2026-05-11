@@ -85,14 +85,17 @@ def main(argv: Sequence[str]) -> int:
     import os
     github_token = args.github_token or os.environ.get("GITHUB_TOKEN")
 
-    from core.http import default_client as _default_http
     from core.json import JsonCache
-    from .. import SCA_CACHE_ROOT
+    from .. import SCA_CACHE_ROOT, default_client as _sca_default_http
     from ..registries.npm import NpmClient
     from ..registries.pypi import PyPIClient
     from .orchestrator import render_report, run_bump
 
-    http = _default_http(target=target)
+    # Use SCA's default_client (vs core.http.default_client) — it
+    # builds the right egress-allowlisted HttpClient with SCA's
+    # known-host set augmented by anything the target's Dockerfiles
+    # reference.
+    http = _sca_default_http(target=target)
     cache_root = Path(args.cache_root) if args.cache_root else SCA_CACHE_ROOT
     cache = None if args.no_cache else JsonCache(root=cache_root)
     pypi_client = PyPIClient(http, cache, offline=False)
