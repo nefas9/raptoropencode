@@ -265,6 +265,16 @@ def _canonical_key(row: Dict[str, Any]) -> Optional[Tuple[str, ...]]:
         return ("hygiene", vuln_type, eco, name)
     if vuln_type.startswith("sca:supply_chain:"):
         return ("supply", vuln_type, eco, name)
+    if vuln_type.startswith("sca:license:"):
+        # Pre-fix license rows had no canonical key, so they were
+        # invisibly dropped from every diff bucket — new license
+        # violations in a PR never surfaced; persistent license
+        # findings didn't count in the steady-state backlog
+        # summary. Same (eco, name) identity as hygiene/supply
+        # since license policy is a project-level concern about a
+        # dep, not version-specific (an SPDX change between
+        # versions is a separate finding anyway).
+        return ("license", vuln_type, eco, name)
     return None
 
 

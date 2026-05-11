@@ -80,7 +80,11 @@ _SEV_LABEL: dict[str, str] = {
     "medium": "Medium",
     "low": "Low",
     "info": "Info",
-    "none": "None",
+    # ``none`` = CVSS rated 0.0 (rare; OSV occasionally ships
+    # such advisories for compatibility-flag CVEs). Label the
+    # column distinctively so operators don't read it as a
+    # placeholder.
+    "none": "None (CVSS 0.0)",
 }
 
 

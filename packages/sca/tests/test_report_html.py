@@ -324,6 +324,36 @@ def test_hygiene_row_also_filterable() -> None:
     assert 'class="finding sev-medium"' in html
 
 
+def test_severity_none_rendered_with_styled_label() -> None:
+    """OSV occasionally ships CVSS=0.0 advisories. Pre-fix the
+    finding card rendered as ``<span class="sev sev-none">None</span>``
+    with no CSS rule for ``sev-none`` (white-on-white in dark mode),
+    no entry in the JS rank table (causing it to be invisibly
+    hidden under "Info+"), and a bare "None" label that read as
+    placeholder text.
+
+    Fix: ``sev-none`` has a CSS rule, ``none: 0`` is in the JS
+    rank table, label reads "None (CVSS 0.0)" so operators see
+    why it's there."""
+    d = _dep()
+    adv = _adv("none", 0.0)
+    adv.aliases = ["CVE-2099-none"]
+    findings = build_vuln_findings([d], [OsvResult(d.key(), [adv])])
+    html = render_html_report(
+        target=Path("/x"), deps_analysed=1,
+        vuln_findings=findings, hygiene_findings=[],
+    )
+    # CSS rule must exist (allow any whitespace before the opening brace).
+    import re as _re
+    assert _re.search(r"\.sev-none\s+\{", html), (
+        "sev-none CSS rule missing from rendered HTML"
+    )
+    # JS rank table includes none: 0.
+    assert "none: 0" in html
+    # Distinguishing label.
+    assert "None (CVSS 0.0)" in html
+
+
 def test_filter_bar_omitted_section_header_handling() -> None:
     """When the report is empty (no findings) the filter bar is
     still rendered (it's a no-op) but the JS handles the zero-

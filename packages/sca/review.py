@@ -266,13 +266,35 @@ def _compute_verdict(
     all_vuln_findings = list(vuln_findings)
     if transitive_findings:
         all_vuln_findings.extend(transitive_findings)
+    critical_count = 0
     for f in all_vuln_findings:
         if f.in_kev:
             return _VERDICT_BLOCK
         if (severity_rank(f.severity) >= severity_rank("critical")
                 and not f.fixed_version):
             return _VERDICT_BLOCK
+        # Single critical with high EPSS (≥0.5 = "likely exploited
+        # in the next 30 days" per FIRST.org) is operator-
+        # actionable even if a fix exists: someone is going to
+        # exploit this soon enough that "I'll upgrade next sprint"
+        # isn't a defensible posture. Block at install-time so the
+        # operator is forced to either accept-risk explicitly or
+        # pick a clean version.
+        if (severity_rank(f.severity) >= severity_rank("critical")
+                and f.epss is not None and f.epss >= 0.5):
+            return _VERDICT_BLOCK
+        if severity_rank(f.severity) >= severity_rank("critical"):
+            critical_count += 1
         verdict = max(verdict, _VERDICT_REVIEW)
+    # ≥2 critical CVEs at install time is its own block class. The
+    # pre-fix verdict was "Review" because no individual finding
+    # tripped the existing thresholds (KEV / no-fix / high-EPSS),
+    # but a package with two concurrent critical CVEs is rarely
+    # what an operator wants to add fresh — usually it's an
+    # outdated pin (e.g. django 4.2.10 with 3 critical SQL-
+    # injection CVEs all fixed by later 4.2.x).
+    if critical_count >= 2:
+        return _VERDICT_BLOCK
     for t in typo_findings:
         if t.distance <= 1:
             return _VERDICT_BLOCK

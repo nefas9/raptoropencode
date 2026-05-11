@@ -30,6 +30,10 @@ from .models import (
 _SEV_LABEL = {
     "critical": "Critical", "high": "High", "medium": "Medium",
     "low": "Low", "info": "Info",
+    # ``none`` = CVSS rated 0.0 (rare). Rendered with a distinct
+    # label so operators don't read the bare word "None" as a
+    # placeholder / bug.
+    "none": "None (CVSS 0.0)",
 }
 
 # Severity-keyed colours. Permissive palette — readable on light
@@ -457,7 +461,10 @@ def _filter_bar(ecosystems: Sequence[str]) -> str:
 # imports).
 _FILTER_SCRIPT = """<script>
 (function () {
-  var ranks = {critical: 5, high: 4, medium: 3, low: 2, info: 1};
+  // ``none`` covers CVSS=0.0 advisories — pinned at rank 0 so the
+  // "Info+" filter hides them and the "All" filter shows them.
+  var ranks = {critical: 5, high: 4, medium: 3, low: 2, info: 1,
+                none: 0};
   var bar = document.getElementById('filters');
   if (!bar) return;
   var counter = document.getElementById('filter-counter');
@@ -559,6 +566,11 @@ dl.counts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .sev-medium   { background: #854d0e; }
 .sev-low      { background: #1e40af; }
 .sev-info     { background: #374151; }
+/* CVSS rated 0.0 (rare; OSV occasionally ships ``severity=none``
+   advisories for compatibility-flag CVEs). Same grey as info —
+   triage-neutral. Without this rule, severity=none cards rendered
+   as un-styled white-on-white text in dark mode. */
+.sev-none     { background: #525252; }
 article.finding {
   border-left: 3px solid #888; padding-left: 0.75rem;
   margin-bottom: 1rem;

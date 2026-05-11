@@ -285,6 +285,26 @@ def test_persistent_excludes_suppressed_on_both_sides_by_default() -> None:
     assert len(d_audit.persistent) == 1
 
 
+def test_license_findings_carry_canonical_key() -> None:
+    """Pre-fix license rows had no canonical key — invisibly
+    dropped from every diff bucket. A new policy violation in a
+    PR didn't surface; a steady-state license backlog wasn't
+    counted in ``persistent``."""
+    row = {
+        "id": "sca:license_unknown:PyPI:gpl-pkg@1.0:/r/req.txt",
+        "finding_id": "sca:license_unknown:PyPI:gpl-pkg@1.0:/r/req.txt",
+        "vuln_type": "sca:license:denied",
+        "severity": "high",
+        "suppressed": False,
+        "sca": {"ecosystem": "PyPI", "name": "gpl-pkg",
+                 "version": "1.0", "kind": "license_denied"},
+    }
+    d = diff.compute_delta([row], [row])
+    # Both sides carry the same license row → persistent bucket
+    # (not silently dropped, which was the pre-fix behaviour).
+    assert len(d.persistent) == 1
+
+
 def test_persistent_severity_breakdown_in_summary() -> None:
     """Markdown report's persistent line carries the severity
     breakdown so operators reading CI logs see whether the backlog

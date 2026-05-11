@@ -450,3 +450,98 @@ def test_kev_in_transitive_escalates_verdict_to_block(
     assert "Transitive surface" in out
     assert "vulnerable-pkg" in out
     assert "KEV" in out
+
+
+# ---------------------------------------------------------------------------
+# _compute_verdict — unit-level guards for the multi-critical and
+# high-EPSS threshold additions.
+# ---------------------------------------------------------------------------
+
+from packages.sca.models import (                       # noqa: E402
+    Confidence, Dependency, PinStyle, Reachability,
+    VulnFinding,
+)
+
+
+def _vuln(severity: str = "critical", *, fixed: str | None = "9.0.0",
+           in_kev: bool = False, epss: float | None = None) -> VulnFinding:
+    dep = Dependency(
+        ecosystem="PyPI", name="x", version="1.0",
+        declared_in=Path("/r/req.txt"), scope="main",
+        is_lockfile=False, pin_style=PinStyle.EXACT, direct=True,
+        purl="pkg:pypi/x@1.0",
+        parser_confidence=Confidence("high", reason="t"),
+    )
+    return VulnFinding(
+        finding_id=f"sca:vuln:PyPI:x@1.0:{severity}-{epss}-{in_kev}",
+        dependency=dep,
+        advisories=[],
+        in_kev=in_kev,
+        epss=epss,
+        fixed_version=fixed,
+        reachability=Reachability(
+            verdict="not_evaluated",
+            confidence=Confidence("low", reason="t"),
+        ),
+        version_match_confidence=Confidence("high", reason="t"),
+        cvss_score=9.0,
+        cvss_vector="CVSS:3.1/...",
+        severity=severity,         # type: ignore[arg-type]
+        exposure_factor=1.0,
+        transitive_depth=0,
+    )
+
+
+def test_two_criticals_with_fix_now_block() -> None:
+    """django 4.2.10 had 3 critical SQL-injection CVEs, each with
+    a fix available; pre-fix the verdict was Review because no
+    single finding tripped a threshold. Multiple criticals at
+    install time are blocker-tier."""
+    from packages.sca.review import (
+        _VERDICT_BLOCK, _compute_verdict,
+    )
+    findings = [_vuln(severity="critical"),
+                _vuln(severity="critical")]
+    assert _compute_verdict(findings, []) == _VERDICT_BLOCK
+
+
+def test_single_critical_with_fix_stays_review() -> None:
+    """Threshold for the new block path is ≥2 criticals — one is
+    still a Review (operator may have a reason to accept a single
+    fixable critical for a release-train window)."""
+    from packages.sca.review import (
+        _VERDICT_REVIEW, _compute_verdict,
+    )
+    assert _compute_verdict([_vuln(severity="critical")], []) == _VERDICT_REVIEW
+
+
+def test_single_critical_with_high_epss_blocks() -> None:
+    """Single critical with EPSS ≥ 0.5 (FIRST.org: "likely
+    exploited in next 30 days") is operator-actionable even with
+    a fix available — telling someone "I'll upgrade next sprint"
+    isn't defensible when the EPSS is that high."""
+    from packages.sca.review import (
+        _VERDICT_BLOCK, _compute_verdict,
+    )
+    f = _vuln(severity="critical", epss=0.65)
+    assert _compute_verdict([f], []) == _VERDICT_BLOCK
+
+
+def test_single_critical_with_low_epss_does_not_block() -> None:
+    """Below-threshold EPSS doesn't fire the high-EPSS escalation;
+    falls back to Review."""
+    from packages.sca.review import (
+        _VERDICT_REVIEW, _compute_verdict,
+    )
+    f = _vuln(severity="critical", epss=0.10)
+    assert _compute_verdict([f], []) == _VERDICT_REVIEW
+
+
+def test_single_critical_no_epss_does_not_block() -> None:
+    """``epss=None`` (FIRST.org has no score for this CVE yet) is
+    not an escalation signal; falls back to Review."""
+    from packages.sca.review import (
+        _VERDICT_REVIEW, _compute_verdict,
+    )
+    f = _vuln(severity="critical", epss=None)
+    assert _compute_verdict([f], []) == _VERDICT_REVIEW
