@@ -156,14 +156,28 @@ def _report_to_dict(report) -> dict:
         "target": str(report.target),
         "candidates": [
             {
+                "kind": c.kind,
+                "locator": c.locator,
+                # ``arg_name`` retained as a back-compat alias of
+                # ``locator`` for JSON consumers wired against the
+                # original ARG-only output shape.
                 "arg_name": c.arg_name,
                 "file": str(c.file),
                 "current_version": c.current_version,
                 "target_version": c.target_version,
-                "upstream": {
-                    "kind": c.upstream.kind,
-                    "coordinate": c.upstream.coordinate,
-                },
+                # ``upstream`` is None for kinds whose target is
+                # discovered out-of-band (``from_image`` / ``yaml_image``
+                # → OCI tag listing, ``helm_chart`` → Helm repo
+                # index, ``git_submodule`` → ls-remote). Surface a
+                # null instead of crashing on ``c.upstream.kind``.
+                "upstream": (
+                    {
+                        "kind": c.upstream.kind,
+                        "coordinate": c.upstream.coordinate,
+                    }
+                    if c.upstream is not None
+                    else None
+                ),
             }
             for c in report.candidates
         ],
