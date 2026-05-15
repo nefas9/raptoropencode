@@ -416,6 +416,18 @@ def _try_cascade_batch(
             parents_by_name = _extract_npm_lock_parents(
                 result.proposed_lockfile
             )
+        elif ecosystem == "Cargo":
+            parents_by_name = _extract_cargo_lock_parents(
+                result.proposed_lockfile
+            )
+        elif ecosystem == "Packagist":
+            parents_by_name = _extract_composer_lock_parents(
+                result.proposed_lockfile
+            )
+        elif ecosystem == "RubyGems":
+            parents_by_name = _extract_gemfile_lock_parents(
+                result.proposed_lockfile
+            )
         tagged = [
             _with_cascade_source(
                 d, host,
@@ -575,6 +587,106 @@ def _try_cascade(
         for d in deps
     ]
     return tagged, None
+
+
+def _extract_cargo_lock_parents(blob: bytes) -> Dict[str, List[str]]:
+    """Cargo.lock parent extraction. Each ``[[package]]`` entry
+    has ``dependencies = ["name version checksum", ...]``."""
+    try:
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib   # type: ignore[import]
+        data = tomllib.loads(blob.decode("utf-8", errors="replace"))
+    except Exception:                                       # noqa: BLE001
+        return {}
+    out: Dict[str, List[str]] = {}
+    packages = data.get("package") or []
+    if not isinstance(packages, list):
+        return {}
+    for pkg in packages:
+        if not isinstance(pkg, dict):
+            continue
+        parent_name = pkg.get("name")
+        if not isinstance(parent_name, str):
+            continue
+        for dep_str in pkg.get("dependencies") or []:
+            if not isinstance(dep_str, str):
+                continue
+            # ``"<name> <version> (<source>)"`` or ``"<name>"``.
+            child = dep_str.split(" ", 1)[0]
+            if child:
+                out.setdefault(child.lower(), []).append(parent_name.lower())
+    return out
+
+
+def _extract_composer_lock_parents(blob: bytes) -> Dict[str, List[str]]:
+    """composer.lock parent extraction. JSON shape with
+    ``packages: [{name, require: {...}}, ...]`` and
+    ``packages-dev: [...]``."""
+    import json as _json
+    try:
+        data = _json.loads(blob)
+    except Exception:                                       # noqa: BLE001
+        return {}
+    out: Dict[str, List[str]] = {}
+    for group in ("packages", "packages-dev"):
+        for pkg in data.get(group) or []:
+            if not isinstance(pkg, dict):
+                continue
+            parent_name = pkg.get("name")
+            if not isinstance(parent_name, str):
+                continue
+            for child_name in (pkg.get("require") or {}):
+                out.setdefault(
+                    child_name.lower(), [],
+                ).append(parent_name.lower())
+    return out
+
+
+def _extract_gemfile_lock_parents(blob: bytes) -> Dict[str, List[str]]:
+    """Gemfile.lock parent extraction. Format:
+
+        GEM
+          remote: https://rubygems.org/
+          specs:
+            actionpack (8.0.1)
+              actionview (= 8.0.1)
+              activesupport (= 8.0.1)
+            actionview (8.0.1)
+              activesupport (= 8.0.1)
+
+    Each top-level (non-indented gem line) names a parent; each
+    child line indented under it is a dependency."""
+    out: Dict[str, List[str]] = {}
+    text = blob.decode("utf-8", errors="replace")
+    in_specs = False
+    current_parent: Optional[str] = None
+    import re as _re
+    spec_re = _re.compile(r"^(\s+)([a-zA-Z0-9._-]+)")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "specs:":
+            in_specs = True
+            continue
+        if not in_specs:
+            continue
+        if not line.startswith(" "):
+            # Out of the specs block; reset.
+            in_specs = False
+            current_parent = None
+            continue
+        m = spec_re.match(line)
+        if not m:
+            continue
+        indent, name = m.group(1), m.group(2)
+        # Top-level gems in specs: are 4-space indented;
+        # their children are 6-space indented (2 deeper).
+        if len(indent) == 4:
+            current_parent = name.lower()
+        elif len(indent) >= 6 and current_parent is not None:
+            out.setdefault(name.lower(), []).append(current_parent)
+    return out
 
 
 def _extract_npm_lock_parents(blob: bytes) -> Dict[str, List[str]]:

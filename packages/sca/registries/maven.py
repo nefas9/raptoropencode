@@ -145,4 +145,97 @@ def _extract_versions(data: dict) -> List[str]:
     return out
 
 
+def _add_pom_methods():
+    """Attach ``get_pom`` and ``get_metadata`` to MavenClient.
+
+    Separated for readability — these methods serve the
+    transitive-drop detector, not the version-listing path."""
+
+    def get_metadata(self, name: str) -> Optional[dict]:
+        """Aggregate-shape adapter — returns ``{releases: {<ver>: []}}``
+        keyed off ``list_versions`` so the transitive-drop
+        detector's ``_latest_stable_version`` finds the latest."""
+        versions = self.list_versions(name)
+        if not versions:
+            return None
+        return {
+            "releases": {v: [] for v in versions},
+            "info": {"version": versions[0]},
+        }
+
+    def get_pom(self, coord: str, version: str) -> Optional[dict]:
+        """Fetch + parse a POM XML file from Maven Central.
+
+        ``coord`` is ``groupId:artifactId``. Returns a dict with
+        ``dependencies: [{groupId, artifactId, version, scope,
+        optional}, ...]``. Properties (``${...}``) are NOT
+        substituted; parent-POM inheritance is NOT resolved
+        (separate detector handles those gaps). Returns None on
+        404 / parse failure / offline.
+        """
+        if ":" not in coord:
+            return None
+        group, artifact = coord.split(":", 1)
+        cache_key = f"maven-pom:{coord}:{version}"
+        if self._cache is not None:
+            cached = self._cache.get(cache_key, ttl_seconds=self._ttl)
+            if cached is not None:
+                return cached
+        if self._offline:
+            return None
+        group_path = group.replace(".", "/")
+        url = (f"https://repo1.maven.org/maven2/{group_path}/"
+                f"{artifact}/{version}/{artifact}-{version}.pom")
+        try:
+            resp = self._http.request(
+                "GET", url, raise_on_status=False,
+            )
+        except Exception as e:                              # noqa: BLE001
+            logger.warning(
+                "sca.registries.maven: POM fetch failed for "
+                "%s@%s: %s", coord, version, e,
+            )
+            return None
+        if resp.status_code != 200:
+            return None
+        try:
+            try:
+                from defusedxml.ElementTree import fromstring as _xml
+            except ImportError:
+                from xml.etree.ElementTree import fromstring as _xml
+            root = _xml(resp.content)
+        except Exception as e:                              # noqa: BLE001
+            logger.warning(
+                "sca.registries.maven: POM parse failed for "
+                "%s@%s: %s", coord, version, e,
+            )
+            return None
+
+        ns = "{http://maven.apache.org/POM/4.0.0}"
+        deps_node = root.find(f"{ns}dependencies")
+        deps: List[dict] = []
+        if deps_node is not None:
+            for d in deps_node.findall(f"{ns}dependency"):
+                gid = (d.findtext(f"{ns}groupId") or "").strip()
+                aid = (d.findtext(f"{ns}artifactId") or "").strip()
+                ver = (d.findtext(f"{ns}version") or "").strip()
+                scope = (d.findtext(f"{ns}scope") or "").strip()
+                optional = (d.findtext(f"{ns}optional") or "").strip()
+                deps.append({
+                    "groupId": gid, "artifactId": aid,
+                    "version": ver, "scope": scope,
+                    "optional": optional,
+                })
+        result = {"dependencies": deps}
+        if self._cache is not None:
+            self._cache.put(cache_key, result, ttl_seconds=self._ttl)
+        return result
+
+    MavenClient.get_metadata = get_metadata
+    MavenClient.get_pom = get_pom
+
+
+_add_pom_methods()
+
+
 __all__ = ["MavenClient"]

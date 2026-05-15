@@ -579,6 +579,8 @@ def run_sca(
         from .registries.crates import CratesClient as _CratesC
         from .registries.packagist import PackagistClient as _PackC
         from .registries.rubygems import RubyGemsClient as _GemC
+        from .registries.maven import MavenClient as _MvnC
+        from .registries.nuget import NugetClient as _NgC
         from .transitive_drop import detect_droppable_transitives
         progress.stage("transitive-drop")
         drop_findings = detect_droppable_transitives(
@@ -591,9 +593,8 @@ def run_sca(
             cargo_client=_CratesC(http, cache, offline=options.offline),
             composer_client=_PackC(http, cache, offline=options.offline),
             rubygems_client=_GemC(http, cache, offline=options.offline),
-            # Maven + NuGet clients land in follow-up commits;
-            # the detector silently skips ecosystems with no
-            # client passed.
+            maven_client=_MvnC(http, cache, offline=options.offline),
+            nuget_client=_NgC(http, cache, offline=options.offline),
         )
         from .transitive_drop.adapter import to_supply_chain_findings
         td_sc = to_supply_chain_findings(drop_findings)

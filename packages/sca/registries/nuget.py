@@ -96,4 +96,95 @@ def _semver_key(v: str):
     return tuple(out)
 
 
+def _add_nuspec_methods():
+    """Attach ``get_metadata`` + ``get_nuspec`` to NugetClient."""
+
+    def get_metadata(self, name: str) -> Optional[dict]:
+        versions = self.list_versions(name)
+        if not versions:
+            return None
+        return {
+            "releases": {v: [] for v in versions},
+            "info": {"version": versions[0]},
+        }
+
+    def get_nuspec(self, pkg: str, version: str) -> Optional[dict]:
+        """Fetch + parse a .nuspec XML.
+
+        ``api.nuget.org/v3-flatcontainer/<id>/<ver>/<id>.nuspec``;
+        case-insensitive (caller normalises). Returns
+        ``{dependency_groups: [{targetFramework, dependencies}]}``."""
+        cache_key = f"nuget-nuspec:{pkg.lower()}:{version}"
+        if self._cache is not None:
+            cached = self._cache.get(cache_key, ttl_seconds=self._ttl)
+            if cached is not None:
+                return cached
+        if self._offline:
+            return None
+        lower = pkg.lower()
+        url = (f"https://api.nuget.org/v3-flatcontainer/{lower}/"
+                f"{version}/{lower}.nuspec")
+        try:
+            resp = self._http.request(
+                "GET", url, raise_on_status=False,
+            )
+        except Exception as e:                              # noqa: BLE001
+            logger.warning(
+                "sca.registries.nuget: nuspec fetch failed for "
+                "%s@%s: %s", pkg, version, e,
+            )
+            return None
+        if resp.status_code != 200:
+            return None
+        try:
+            try:
+                from defusedxml.ElementTree import fromstring as _xml
+            except ImportError:
+                from xml.etree.ElementTree import fromstring as _xml
+            root = _xml(resp.content)
+        except Exception as e:                              # noqa: BLE001
+            logger.warning(
+                "sca.registries.nuget: nuspec parse failed for "
+                "%s@%s: %s", pkg, version, e,
+            )
+            return None
+        ns = ""
+        if root.tag.startswith("{"):
+            ns = root.tag.split("}", 1)[0] + "}"
+        meta = root.find(f"{ns}metadata") or root
+        deps_root = meta.find(f"{ns}dependencies") if meta is not None else None
+        groups: List[dict] = []
+        if deps_root is not None:
+            inner_groups = list(deps_root.findall(f"{ns}group"))
+            if inner_groups:
+                for g in inner_groups:
+                    tfm = g.get("targetFramework", "")
+                    deps = [
+                        {"id": d.get("id", ""),
+                         "version": d.get("version", "")}
+                        for d in g.findall(f"{ns}dependency")
+                    ]
+                    groups.append({
+                        "targetFramework": tfm,
+                        "dependencies": deps,
+                    })
+            else:
+                deps = [
+                    {"id": d.get("id", ""),
+                     "version": d.get("version", "")}
+                    for d in deps_root.findall(f"{ns}dependency")
+                ]
+                groups = [{"targetFramework": "", "dependencies": deps}]
+        result = {"dependency_groups": groups}
+        if self._cache is not None:
+            self._cache.put(cache_key, result, ttl_seconds=self._ttl)
+        return result
+
+    NugetClient.get_metadata = get_metadata
+    NugetClient.get_nuspec = get_nuspec
+
+
+_add_nuspec_methods()
+
+
 __all__ = ["NugetClient"]
