@@ -382,6 +382,143 @@ def test_from_image_digest_pinned_silently_skipped(tmp_path: Path) -> None:
              if c.kind == "from_image"] == []
 
 
+# ---------------------------------------------------------------------------
+# Inline ``RUN pip install <name>==<version>`` (Phase 3.f)
+# ---------------------------------------------------------------------------
+
+def _stub_pypi_with_versions(packages: dict) -> object:
+    """A PyPI stub that supports both ``get_metadata`` (existing
+    Tier-1 detectors) AND ``list_versions`` (the inline-install
+    walker added in Phase 3.f). ``packages`` is a dict mapping
+    name → list[version]."""
+    class _S:
+        def __init__(self, p): self._p = p
+        def get_metadata(self, n):
+            v = self._p.get(n)
+            if v is None:
+                return None
+            return {"releases": {ver: [] for ver in v}}
+        def list_versions(self, n):
+            return list(self._p.get(n) or [])
+    return _S(packages)
+
+
+def test_inline_install_pip_pinned_becomes_candidate(
+    tmp_path: Path,
+) -> None:
+    """``RUN pip install semgrep==1.161.0`` with newer stable
+    release on PyPI → inline_install_pip bump candidate."""
+    (tmp_path / "Dockerfile").write_text(
+        "FROM python:3.13\n"
+        "RUN pip install --no-cache-dir semgrep==1.161.0\n"
+    )
+    http = _StubHttp({
+        "https://registry-1.docker.io/v2/library/python/tags/list?n=100":
+            {"name": "library/python",
+             "tags": ["3.12", "3.13"]},
+    })
+    pypi = _stub_pypi_with_versions({
+        "semgrep": ["1.160.0", "1.161.0", "1.162.0", "1.163.0"],
+    })
+    report = run_bump(tmp_path, http=http, pypi_client=pypi)
+    inline = [c for c in report.candidates
+              if c.kind == "inline_install_pip"]
+    assert len(inline) == 1
+    assert inline[0].locator == "semgrep"
+    assert inline[0].current_version == "1.161.0"
+    assert inline[0].target_version == "1.163.0"
+    assert inline[0].upstream is None
+    assert inline[0].extra == {"kind": "inline_install_pip"}
+
+
+def test_inline_install_pip_already_at_latest_not_a_candidate(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Dockerfile").write_text(
+        "FROM python:3.13\nRUN pip install semgrep==1.163.0\n"
+    )
+    http = _StubHttp({
+        "https://registry-1.docker.io/v2/library/python/tags/list?n=100":
+            {"name": "library/python",
+             "tags": ["3.13"]},
+    })
+    pypi = _stub_pypi_with_versions({
+        "semgrep": ["1.161.0", "1.162.0", "1.163.0"],
+    })
+    report = run_bump(tmp_path, http=http, pypi_client=pypi)
+    assert [c for c in report.candidates
+            if c.kind == "inline_install_pip"] == []
+
+
+def test_inline_install_pip_no_pypi_client_skipped(
+    tmp_path: Path,
+) -> None:
+    """When the caller doesn't pass a PyPI client (e.g. offline
+    runs), the inline-install walker is skipped entirely — no
+    crash, no candidates, no skipped entries."""
+    (tmp_path / "Dockerfile").write_text(
+        "FROM python:3.13\nRUN pip install semgrep==1.161.0\n"
+    )
+    http = _StubHttp({
+        "https://registry-1.docker.io/v2/library/python/tags/list?n=100":
+            {"name": "library/python", "tags": ["3.13"]},
+    })
+    report = run_bump(tmp_path, http=http, pypi_client=None)
+    assert [c for c in report.candidates
+            if c.kind == "inline_install_pip"] == []
+
+
+def test_inline_install_pip_non_exact_pin_skipped(
+    tmp_path: Path,
+) -> None:
+    """Range pins (``>=1.0``, ``~=2.0``) need different bump
+    semantics than exact pins — out of scope for v1."""
+    (tmp_path / "Dockerfile").write_text(
+        "FROM python:3.13\nRUN pip install 'semgrep>=1.0.0'\n"
+    )
+    http = _StubHttp({
+        "https://registry-1.docker.io/v2/library/python/tags/list?n=100":
+            {"name": "library/python",
+             "tags": ["3.13"]},
+    })
+    pypi = _stub_pypi_with_versions({
+        "semgrep": ["1.161.0", "1.162.0", "1.163.0"],
+    })
+    report = run_bump(tmp_path, http=http, pypi_client=pypi)
+    assert [c for c in report.candidates
+            if c.kind == "inline_install_pip"] == []
+
+
+def test_inline_install_pip_apply_writes_through_dispatcher(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: ``apply=True`` with a Clean inline_install
+    candidate routes through the dockerfile_from dispatcher and
+    rewrites the file."""
+    df = tmp_path / "Dockerfile"
+    df.write_text(
+        "FROM python:3.13\n"
+        "RUN pip install --no-cache-dir semgrep==1.161.0\n"
+    )
+    http = _StubHttp({
+        "https://registry-1.docker.io/v2/library/python/tags/list?n=100":
+            {"name": "library/python", "tags": ["3.13"]},
+    })
+    pypi = _stub_pypi_with_versions({
+        "semgrep": ["1.161.0", "1.163.0"],
+    })
+    report = run_bump(
+        tmp_path, http=http, pypi_client=pypi, apply=True,
+    )
+    applied = [
+        r for r in report.results
+        if r.candidate.kind == "inline_install_pip" and r.rewrite_result
+        and r.rewrite_result.applied
+    ]
+    assert len(applied) == 1
+    assert "semgrep==1.163.0" in df.read_text()
+
+
 def test_from_image_stage_reuse_skipped(tmp_path: Path) -> None:
     """Multi-stage builds: ``FROM build AS runtime`` (where
     ``build`` is a prior stage name, not an image) shouldn't be

@@ -64,19 +64,31 @@ def rewrite_dockerfile_from(
     with dockerfile_arg.
 
     Implementation: this function delegates by examining each
-    edit. ARG-shaped locators (``\\w+_VERSION``) route to the
-    ARG rewriter; image-shaped locators (containing ``/``) route
-    here. Mixed batches get split + reassembled.
+    edit. Primary discriminator is ``extra["kind"]`` set by the
+    bumper orchestrator from the candidate's ``kind`` field.
+    Fallback (no kind in extra): image-shaped locators (containing
+    ``/``) route to the FROM path, everything else to ARG. Mixed
+    batches get split + reassembled.
     """
     arg_edits: List[RewriteEdit] = []
     from_edits: List[RewriteEdit] = []
+    inline_install_edits: List[RewriteEdit] = []
     for edit in edits:
-        # Image refs always contain ``/`` (``library/python``,
-        # ``ghcr.io/foo/bar``); ARG names never do. Discriminate.
-        if "/" in edit.locator:
+        kind = (edit.extra or {}).get("kind")
+        if kind == "from_image":
             from_edits.append(edit)
-        else:
+        elif kind == "arg":
             arg_edits.append(edit)
+        elif kind == "inline_install_pip":
+            inline_install_edits.append(edit)
+        else:
+            # Back-compat shape heuristic for edits without an
+            # ``extra["kind"]``: image refs always contain ``/``,
+            # ARG names never do.
+            if "/" in edit.locator:
+                from_edits.append(edit)
+            else:
+                arg_edits.append(edit)
 
     results: List[RewriteResult] = []
     if from_edits:
@@ -86,6 +98,13 @@ def rewrite_dockerfile_from(
         # collisions don't cause one rewriter to clobber the other.
         from .dockerfile_arg import rewrite_dockerfile_arg
         results.extend(rewrite_dockerfile_arg(path, arg_edits))
+    if inline_install_edits:
+        from .dockerfile_inline_install import (
+            rewrite_dockerfile_inline_install,
+        )
+        results.extend(rewrite_dockerfile_inline_install(
+            path, inline_install_edits,
+        ))
     return results
 
 

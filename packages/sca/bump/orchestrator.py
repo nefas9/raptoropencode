@@ -153,6 +153,7 @@ def run_bump(
     policy = policy or load_policy(target)
     candidates, skipped = _enumerate_candidates(
         target, http=http, cache=cache, github_token=github_token,
+        pypi_client=pypi_client,
     )
     # Apply policy ``skip:`` rules — these move candidates from
     # the candidates list into the skipped list with the
@@ -237,6 +238,7 @@ def _enumerate_candidates(
     http,
     cache,
     github_token: Optional[str],
+    pypi_client: Optional[PyPIClient] = None,
 ) -> Tuple[List[BumpCandidate], List[Tuple[str, Path, str]]]:
     """Find every (Dockerfile, ARG) pair under ``target`` with a
     built-in upstream-source mapping, query the upstream, and
@@ -337,6 +339,21 @@ def _enumerate_candidates(
         candidates.extend(from_candidates)
         skipped.extend(from_skipped)
 
+        # Inline ``RUN pip install <name>==<version>`` pins.
+        # Same Dockerfile, different surface; rewriter is wired
+        # through the dockerfile_from dispatcher via
+        # ``extra["kind"] == "inline_install_pip"``.
+        if pypi_client is not None:
+            inline_candidates, inline_skipped = (
+                _enumerate_inline_install_candidates(
+                    dockerfile=dockerfile,
+                    pypi_client=pypi_client,
+                    inline_cache=latest_cache,
+                )
+            )
+            candidates.extend(inline_candidates)
+            skipped.extend(inline_skipped)
+
     # k8s / docker-compose / gitlab-ci ``image:`` refs — bump
     # candidates from existing OCI-eco Dependency parsers.
     # Reuses ``core/upstream_latest/oci_tags.latest_tag`` from
@@ -389,6 +406,105 @@ def _enumerate_candidates(
         )
         candidates.extend(gha_candidates)
         skipped.extend(gha_skipped)
+    return candidates, skipped
+
+
+def _enumerate_inline_install_candidates(
+    *,
+    dockerfile: Path,
+    pypi_client: PyPIClient,
+    inline_cache: dict,
+) -> Tuple[List[BumpCandidate], List[Tuple[str, Path, str]]]:
+    """Walk ``RUN pip install <name>==<version>`` pins in a
+    Dockerfile and emit candidates whose PyPI-latest stable
+    version is higher than the pinned one.
+
+    Coverage today is PyPI exact-pinned installs only. Other
+    inline-install shapes have parsers in
+    ``packages.sca.parsers.inline_installs`` (``apt-get install
+    foo=1.0``, ``npm install -g foo@1.0``, ``gem install foo -v
+    1.0``) but no bumper walker yet — each needs a different
+    upstream-latest source. The PyPI walker arrived first because
+    raptor's own devcontainer pins semgrep / claude-code / etc.
+    inline via ``pip install``.
+
+    Skipped silently:
+      * Non-exact pin styles (``>=1.0``, ``~=2.0``, etc.) — bump
+        semantics are different for ranges
+      * Current version not stable-semver (``2.0.0b1``,
+        ``1.0.dev123``) — operators on pre-release pins are
+        making a deliberate choice
+      * Already at latest
+
+    Skipped with explanation (returned in the ``skipped`` list):
+      * No stable versions on PyPI for the package
+      * Upstream lookup failed (network / 404)
+    """
+    from core.upstream_latest._version_filter import (
+        highest_stable, parse_stable,
+    )
+    from packages.sca.parsers.inline_installs import parse_dockerfile
+
+    candidates: List[BumpCandidate] = []
+    skipped: List[Tuple[str, Path, str]] = []
+
+    try:
+        deps = parse_dockerfile(dockerfile)
+    except Exception as e:                                  # noqa: BLE001
+        logger.debug(
+            "inline_install walker: parse failed for %s: %s",
+            dockerfile, e,
+        )
+        return candidates, skipped
+
+    for dep in deps:
+        if dep.ecosystem != "PyPI":
+            continue
+        if dep.version is None or not dep.version.strip():
+            continue
+        if dep.pin_style.value != "exact":
+            continue
+        current = dep.version
+        if parse_stable(current) is None:
+            # Pre-release / branch-shaped — leave alone.
+            continue
+
+        # Per-(name, ecosystem) cache so re-walking the same
+        # Dockerfile (e.g. across multiple targets in a sweep)
+        # doesn't re-query PyPI for the same package.
+        cache_key = ("inline_install_pip", dep.name)
+        if cache_key in inline_cache:
+            target_version = inline_cache[cache_key]
+        else:
+            try:
+                versions = pypi_client.list_versions(dep.name)
+            except Exception as e:                          # noqa: BLE001
+                skipped.append((
+                    dep.name, dockerfile,
+                    f"upstream lookup failed: {e}",
+                ))
+                continue
+            target_version = highest_stable(versions or [])
+            inline_cache[cache_key] = target_version
+
+        if target_version is None:
+            skipped.append((
+                dep.name, dockerfile,
+                "no stable versions on PyPI",
+            ))
+            continue
+        if target_version == current:
+            continue
+
+        candidates.append(BumpCandidate(
+            kind="inline_install_pip",
+            locator=dep.name,
+            file=dockerfile,
+            current_version=current,
+            target_version=target_version,
+            upstream=None,
+            extra={"kind": "inline_install_pip"},
+        ))
     return candidates, skipped
 
 
