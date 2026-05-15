@@ -194,9 +194,51 @@ Pinned upstream sources for the source_intel arc's memory-corruption seed (PR0 s
   git checkout d52741728a518afe536d22dc6e9b60193c5fa942
   ```
 
+### Linux kernel — CVE-2019-12382 (drm_edid_load unchecked kstrdup, CWE-476)
+
+- Upstream: https://github.com/torvalds/linux (tag `v5.1`)
+- Fix sha: `9f1f1a2dab38d4ce87a13565cf4dc1b73bef3a5f` (drm-misc)
+- Local path: `out/dataflow-corpus-fixtures/linux-cve-2019-12382/`
+- Bug location: `drivers/gpu/drm/drm_edid_load.c`, function `drm_load_edid_firmware`, line 292
+- CWE: CWE-476 (kstrdup result stored without NULL check → subsequent strsep derefs NULL on alloc failure)
+- Phase A note: this expands the corpus with a real CVE in the source_intel-target shape (unchecked allocator-return). source_intel verdict on this entry is currently UNCERTAIN — kstrdup is `__malloc`-annotated (not `__must_check`) in upstream `include/linux/string.h`, in SUFFIX position (`extern char *kstrdup(...) __malloc;`) which spatch 1.3 can't parse for attribute matching. Per-alias cocci rules + macro-aware discovery would close this gap (axis-1-expansion).
+- Setup: `git clone --filter=blob:none --no-checkout https://github.com/torvalds/linux out/dataflow-corpus-fixtures/linux-cve-2019-12382 && cd out/dataflow-corpus-fixtures/linux-cve-2019-12382 && git sparse-checkout set drivers/gpu/drm/drm_edid_load.c && git checkout v5.1`
+
+### Linux kernel — CVE-2019-12614 (powerpc dlpar unchecked kstrdup, CWE-476)
+
+- Upstream: https://github.com/torvalds/linux (tag `v5.1`)
+- Fix sha: `efa9ace68e487ddd29c2b4d6dd23242158f1f607` (powerpc)
+- Local path: `out/dataflow-corpus-fixtures/linux-cve-2019-12614/`
+- Bug location: `arch/powerpc/platforms/pseries/dlpar.c`, function `dlpar_parse_cc_property`, line 63
+- CWE: CWE-476 (same shape as 12382: kstrdup result stored without NULL check; downstream deref of prop->name)
+- Phase A note: same __malloc + suffix-position gap.
+
+### Linux kernel — CVE-2019-12615 (sparc mdesc unchecked kstrdup_const, CWE-476)
+
+- Upstream: https://github.com/torvalds/linux (tag `v5.1`)
+- Fix sha: `80caf43549e7e41a695c6d1e11066286538b336f` (sparc)
+- Local path: `out/dataflow-corpus-fixtures/linux-cve-2019-12615/`
+- Bug location: `arch/sparc/kernel/mdesc.c`, function `get_vdev_port_node_info`, line 358
+- CWE: CWE-476 (kstrdup_const result stored without NULL check; downstream deref)
+- Phase A note: same gap as 12382/12614.
+
 ### Why each kernel CVE gets its own clone
 
 Each CVE pins to a different upstream SHA, so they can't share a single working tree. The sparse-checkout pattern keeps each clone tiny (a single source file at the pinned commit, ~few KB on disk).
+
+### Axis-1 evidence gap on the kstrdup-class CVEs
+
+The three 2019 unchecked-kstrdup CVEs (12382, 12614, 12615) are real CWE-476 bugs that source_intel's axis-1 model COULD speak to if the macro/preprocessor situation were different. The actual blocker:
+
+1. Kernel `__must_check` and `__malloc` are MACROS that expand to `__attribute__((...))`. spatch 1.3 doesn't preprocess; it sees the macro tokens.
+2. Both macros occupy SUFFIX position on function declarations (`extern T f(...) __malloc;`). spatch 1.3's SmPL grammar rejects trailing-attribute-on-function-declarator.
+
+Closing this gap requires one or more of:
+- Generated per-alias cocci rules (`@must_check_X@` matches `__must_check T f(...);` directly without trying to bind to `__attribute__` semantics)
+- spatch grammar growth for suffix attributes
+- A new rule type ("unchecked allocator call") that pattern-matches the CALL SITE shape instead of binding to the declaration's attribute
+
+The kstrdup CVEs are in the corpus today as substrate-validation fixtures; their source_intel verdict will remain UNCERTAIN until one of the above lands.
 
 ### Regenerating the Juice Shop + WebGoat hand-labels
 
