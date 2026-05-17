@@ -49,7 +49,8 @@ logger = logging.getLogger(__name__)
 
 SUBCOMMANDS = ("fix", "check", "upgrade", "diff",
                "verify", "health", "purl", "render",
-               "clean-cache", "dt-push", "suppress", "bump")
+               "clean-cache", "dt-push", "suppress", "bump",
+               "fingerprint")
 _SUBCOMMANDS = SUBCOMMANDS  # backcompat alias for internal callers
 
 
@@ -114,6 +115,9 @@ def _dispatch(subcommand: str, argv: List[str]) -> int:
     if subcommand == "bump":
         from .bump import cli as bump_cli
         return bump_cli.main(argv)
+    if subcommand == "fingerprint":
+        from . import fingerprint_cli
+        return fingerprint_cli.main(argv)
     print(f"raptor-sca: unknown subcommand {subcommand!r}", file=sys.stderr)
     return 2
 
