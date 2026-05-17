@@ -71,8 +71,7 @@ def _cmd_print(fp_input, args) -> int:
             file=sys.stderr,
         )
         return 3
-    _emit_json(fp.to_dict(), args.out)
-    return 0
+    return _emit_json(fp.to_dict(), args.out)
 
 
 def _cmd_save(fp_input, args, *, store_dir: Path) -> int:
@@ -145,7 +144,12 @@ def _cmd_check(fp_input, args, *, store_dir: Path) -> int:
         "bits_changed": drift.bits_changed,
         "format_changed": drift.format_changed,
     }
-    _emit_json(summary, args.out)
+    # An emit failure (e.g. --out points to a non-writable path)
+    # demotes the drift signal to an infra-failure exit code (3)
+    # because the operator can't have seen the drift JSON.
+    emit_rc = _emit_json(summary, args.out)
+    if emit_rc != 0:
+        return emit_rc
     return 1
 
 
@@ -196,12 +200,25 @@ def _fingerprint_image_ref(ref: str, args):
             pass
 
 
-def _emit_json(payload, out_path: Optional[str]) -> None:
+def _emit_json(payload, out_path: Optional[str]) -> int:
+    """Print to stdout or write to ``out_path``. Returns 0 on
+    success, 3 on I/O failure (matches the CLI's infra-failure
+    exit code so CI gates can differentiate write errors from
+    drift / no-drift)."""
     text = json.dumps(payload, sort_keys=True, indent=2)
-    if out_path:
-        Path(out_path).write_text(text + "\n")
-    else:
+    if not out_path:
         print(text)
+        return 0
+    try:
+        Path(out_path).write_text(text + "\n")
+    except OSError as e:
+        print(
+            f"raptor-sca fingerprint: --out write failed "
+            f"({out_path!r}): {e}",
+            file=sys.stderr,
+        )
+        return 3
+    return 0
 
 
 # ---------------------------------------------------------------------------

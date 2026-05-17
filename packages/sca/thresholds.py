@@ -95,9 +95,16 @@ def evaluate(
                 if cfg.fail_on_capability_drift:
                     fails.append(f"[capability-drift] {desc}")
                 if cfg.max_added_capability_buckets is not None:
-                    added = (
-                        row.get("evidence", {}).get("added_buckets") or []
-                    )
+                    # Defensive: a hand-edited findings.json or a
+                    # third-party emitter may produce a non-dict
+                    # evidence field or a non-list ``added_buckets``.
+                    # Treat anything we can't count as zero added
+                    # buckets rather than crash the build gate.
+                    ev = row.get("evidence", {})
+                    if not isinstance(ev, dict):
+                        ev = {}
+                    raw_added = ev.get("added_buckets")
+                    added = raw_added if isinstance(raw_added, list) else []
                     if len(added) > cfg.max_added_capability_buckets:
                         fails.append(
                             f"[capability-drift +{len(added)} buckets > "

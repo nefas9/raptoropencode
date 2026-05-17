@@ -323,3 +323,40 @@ def test_drift_evidence_missing_added_buckets_field_treated_as_empty() -> None:
     }]
     passed, fails = thresholds.evaluate(rows, cfg)
     assert passed is True
+
+
+def test_drift_evidence_non_dict_treated_as_empty() -> None:
+    """A third-party emitter or hand-edited findings.json can land
+    with ``evidence`` as a string / int / list. Don't crash the
+    build gate — treat as no added buckets."""
+    cfg = thresholds.ThresholdConfig(max_added_capability_buckets=0)
+    for bad_ev in ("a string", 42, ["a", "list"], None):
+        rows = [{
+            "vuln_type": "sca:supply_chain:image_capability_drift",
+            "severity": "medium",
+            "description": "weird evidence",
+            "evidence": bad_ev,
+        }]
+        passed, fails = thresholds.evaluate(rows, cfg)
+        assert passed is True, (
+            f"expected pass on evidence={bad_ev!r}, got fails={fails!r}"
+        )
+
+
+def test_drift_added_buckets_non_list_treated_as_empty() -> None:
+    """``evidence.added_buckets`` is a string/int/dict → don't
+    fall back to ``len(str)`` semantics (which would surprise
+    operators by counting characters)."""
+    cfg = thresholds.ThresholdConfig(max_added_capability_buckets=0)
+    for bad_added in ("a-string-with-23-chars", 5, {"k": "v"}, None):
+        rows = [{
+            "vuln_type": "sca:supply_chain:image_capability_drift",
+            "severity": "medium",
+            "description": "weird added_buckets",
+            "evidence": {"added_buckets": bad_added},
+        }]
+        passed, fails = thresholds.evaluate(rows, cfg)
+        assert passed is True, (
+            f"expected pass on added_buckets={bad_added!r}, "
+            f"got fails={fails!r}"
+        )

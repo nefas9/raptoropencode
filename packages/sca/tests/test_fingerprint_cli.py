@@ -182,6 +182,40 @@ class TestFailureModes:
         assert rc == 3
 
 
+class TestOutFlag:
+    def test_out_to_directory_exits_three(self, tmp_path, capsys):
+        """``--out <dir>`` (instead of <file>) → exit 3 with a
+        readable error, not a Python traceback."""
+        if not Path("/usr/bin/python3").is_file():
+            pytest.skip("/usr/bin/python3 not present")
+        # Point --out at an existing directory
+        rc = fingerprint_cli.main([
+            "/usr/bin/python3",
+            "--out", str(tmp_path),
+            "--cache-root", str(tmp_path / "cache"),
+        ])
+        assert rc == 3
+        err = capsys.readouterr().err
+        assert "--out write failed" in err
+        # No Python traceback leaked
+        assert "Traceback" not in err
+
+    def test_out_writes_file(self, tmp_path):
+        if not Path("/usr/bin/python3").is_file():
+            pytest.skip("/usr/bin/python3 not present")
+        out = tmp_path / "fp.json"
+        rc = fingerprint_cli.main([
+            "/usr/bin/python3",
+            "--out", str(out),
+            "--cache-root", str(tmp_path / "cache"),
+        ])
+        assert rc == 0
+        assert out.is_file()
+        import json as _j
+        data = _j.loads(out.read_text())
+        assert data["binary_format"] == "elf"
+
+
 class TestArgs:
     def test_help_does_not_crash(self, capsys):
         with pytest.raises(SystemExit) as exc:
