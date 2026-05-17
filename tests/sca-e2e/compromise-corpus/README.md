@@ -94,6 +94,25 @@ otherwise — suitable as a CI gate.
 
 See ``metadata.yaml`` in each fixture directory.
 
+## Signal classes NOT covered by the corpus (and why)
+
+The corpus is metadata-only static fixtures. Four signal classes
+the SCA pipeline ships don't fit that model — they're exercised
+elsewhere (unit tests against mocked data), not here.
+
+| Signal | Why static fixtures don't exercise it | Where it IS covered |
+|---|---|---|
+| ``recent_publish`` | Fires when a package's ``first_publish`` is within 30 days. Malicious packages get yanked quickly, taking the registry's publish-date metadata with them; a fixture pinning a specific malicious version watches the signal decay as the package is removed. | ``packages/sca/supply_chain/tests/test_registry_metadata.py`` — unit tests against a fixture ``_Meta`` object with a recent ``first_publish``. |
+| ``maintainer_change`` | Fires when the maintainer list changed between the two most-recent versions, OR a maintainer joined within 14 days. Both windows decay rapidly; pinning a version where the change was recent only works for a narrow time window. | Same: ``test_registry_metadata.py``. |
+| ``image_capability_drift`` | Requires (1) live OCI registry access to fetch the image's binary, (2) a pre-populated fingerprint baseline file, (3) a CLI flag (``enable_image_drift``) that isn't yet plumbed through to the operator-facing CLI. None of these compose with manifest-only static fixtures. | ``packages/sca/tests/test_image_drift.py`` — unit tests against a mocked OCI client + in-memory baselines. ``raptor-sca fingerprint`` CLI exercises the same primitives manually. |
+| ``binary_capability_delta`` | Fires inside the ``bump`` flow, not the ``scan`` flow — the detector runs only when SCA is asked to evaluate a version upgrade for a binary-payload dep (Dockerfile FROM bump, GHA Docker-action bump). The corpus harness drives the scan path. | ``packages/sca/bump/tests/test_binary_capability_delta.py`` — unit tests against stubbed radare2 fingerprints. |
+
+Adding these to the corpus would require either (a) a stateful
+harness mode that pre-stages baselines + drives the bump flow, or
+(b) mocked-registry test infrastructure that the manifest-only
+threat model deliberately avoids. Skipped today; the unit-test
+coverage of the underlying detectors is the floor.
+
 Public references:
 
 * OSSF malicious-packages — https://github.com/ossf/malicious-packages
