@@ -8,7 +8,8 @@ source_intel evidence. Reports per-entry verdict deltas and an
 aggregate error-rate change vs ground truth.
 
 Usage:
-  python -m packages.source_intel.measurement \\
+  PYTHONPATH=$(pwd) RAPTOR_DIR=$(pwd) _RAPTOR_TRUSTED=1 \\
+      python3 -m packages.source_intel.measurement \\
       --count 10 [--output csv] [--target-prefix str]
 
   --count N           number of memory-corruption corpus entries to
@@ -19,6 +20,20 @@ Usage:
                       tabular stdout only.
   --target-prefix S   filter corpus entries by filename prefix
                       (e.g. ``source_intel_``).
+
+Environment requirements:
+  * Use the same python3 that runs the rest of RAPTOR — it has the
+    LLM provider SDKs (``google-genai`` for Gemini, ``openai`` for
+    OpenAI, etc.) installed. The system python3 typically does
+    NOT; running with the wrong interpreter produces instant
+    failures + 0-second per-call rows (every result collapses to
+    ``not_exploitable`` via the validator's error-handling path
+    and the measurement reports a misleading 0% delta).
+  * ``PYTHONPATH=$(pwd)`` ensures ``packages.source_intel`` is
+    importable when launching via ``-m``. The libexec/ helper
+    scripts add the repo root to ``sys.path`` themselves; this
+    module is invoked as a python package so it depends on the
+    caller's environment.
 
 LLM cost note: each entry produces 2 LLM calls (one per condition);
 budget accordingly. Sampling 10 entries → ~20 calls. With cheap

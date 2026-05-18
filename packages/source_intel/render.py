@@ -23,6 +23,7 @@ Also provides ``derive_mitigations_found()`` — structured list of
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -473,8 +474,115 @@ def _render_double_free_line(d: DoubleFreeEvidence, style: str) -> str:
     )
 
 
+# Constants the in-function capability render treats as "root-
+# equivalent". Mirrors ``adapter.py:_PRIVILEGED_CAP_CONSTANTS`` and
+# ``analyze.py:_PRIVILEGED_CAP_CONSTANTS_FOR_EVIDENCE``. Single
+# source of truth for "which CAP_ kills the bug as a meaningful
+# escalation" lives in adapter.py per Phase B PR3; copy is kept
+# here to avoid an import cycle (render → adapter → render).
+# Lifting to a shared constants module is a follow-up.
+_PRIVILEGED_CAP_CONSTANTS_FOR_RENDER = frozenset({
+    "CAP_SYS_ADMIN",
+    "CAP_SYS_MODULE",
+    "CAP_SYS_RAWIO",
+    "CAP_SYS_BOOT",
+    "CAP_DAC_OVERRIDE",
+    "CAP_DAC_READ_SEARCH",
+})
+
+# Capability-check functions that test the GLOBAL/INIT user
+# namespace's credentials. A True return means the caller holds
+# that capability against the host root user — true privilege
+# escalation if the bug is reachable.
+#
+# Functions NOT in this set are namespace-scoped (or otherwise
+# weaker): `ns_capable(ns, CAP)` returns True for a userns admin
+# holding CAP inside `ns`, even if the userns was created by an
+# otherwise-unprivileged process. `has_capability_noaudit`,
+# `ptracer_capable`, and similar variants gate against task or
+# tracer creds — not always equivalent to global root.
+#
+# The render prose escalates "ROOT-EQUIVALENT, not a meaningful
+# escalation" ONLY when both:
+#   1. cap_function is in this set (gates against global creds), AND
+#   2. cap constant is in ``_PRIVILEGED_CAP_CONSTANTS_FOR_RENDER``.
+# For namespace-scoped checks gating root-equivalent caps we emit
+# the userns-caveat prose instead — bug is still reachable via
+# `unshare -U` from an unprivileged process.
+_GLOBAL_CRED_CAP_FUNCTIONS = frozenset({
+    "capable",
+})
+
+# Capability-check functions that gate against namespace-scoped
+# credentials. Surfacing as a SEPARATE set (rather than
+# "everything not in global") so future additions (perfmon_capable,
+# bpf_capable) are explicit choices, not silent inclusions.
+_NS_SCOPED_CAP_FUNCTIONS = frozenset({
+    "ns_capable",
+    "ns_capable_noaudit",
+    "has_capability",
+    "has_capability_noaudit",
+    "capable_wrt_inode_uidgid",
+    "file_ns_capable",
+    "ptracer_capable",
+    "checkpoint_restore_ns_capable",
+})
+
+_CAP_CONST_RE = re.compile(r"\bCAP_[A-Z_]+\b")
+
+
+def _privileged_cap_constant_on_line(
+    file_path: str, line_no: int,
+) -> Optional[str]:
+    """Return the first privileged CAP_ constant on the given line,
+    or ``None`` when the line can't be read OR carries no privileged
+    constant. Used by ``_render_capability_line`` to strengthen the
+    prose when the check is root-equivalent.
+
+    Mirrors the verdict-side ``adapter.py:_line_uses_privileged_cap``
+    but returns the constant name rather than a boolean (so the
+    render can include it in the prose)."""
+    try:
+        with open(file_path, "r", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    if line_no < 1 or line_no > len(lines):
+        return None
+    for m in _CAP_CONST_RE.finditer(lines[line_no - 1]):
+        if m.group(0) in _PRIVILEGED_CAP_CONSTANTS_FOR_RENDER:
+            return m.group(0)
+    return None
+
+
 def _render_capability_line(c: CapabilityEvidence, style: str) -> str:
-    """Render one axis-4 capability-check observation."""
+    """Render one axis-4 capability-check observation.
+
+    Three prose tiers based on (cap_function, cap_constant, grade):
+
+      1. Strongest ("ROOT-EQUIVALENT, finding is privilege-gated"):
+         cap_function gates against GLOBAL credentials
+         (``_GLOBAL_CRED_CAP_FUNCTIONS``: ``capable``) AND constant
+         is root-equivalent (``_PRIVILEGED_CAP_CONSTANTS_FOR_RENDER``).
+         Bug not reachable from unprivileged context.
+
+      2. Userns-caveat ("namespace-scoped, root-equivalent CAP can
+         be held by userns admin"): cap_function is namespace-scoped
+         (``_NS_SCOPED_CAP_FUNCTIONS``: ``ns_capable`` and
+         relatives) BUT constant is root-equivalent. An unprivileged
+         user can ``unshare -U`` into a userns and hold the CAP
+         there — bug IS reachable, just one userns hop away. LLM
+         must NOT treat as privilege-gated.
+
+      3. Generic ("Attacker must hold checked capability"): cap
+         constant not in root-equivalent set OR cap_function
+         unknown. Soft-signal prose; LLM weighs.
+
+    The (cap_function, grade) gate matters: on ``same_path``
+    grade, the cap may be on a branch the sink isn't on, so even
+    a root-equivalent constant doesn't gate. Only ``dominates``
+    and ``same_function`` qualify for the strong/userns tiers.
+    """
     fn_text = (
         f"function `{c.enclosing_function}`"
         if c.enclosing_function
@@ -485,12 +593,56 @@ def _render_capability_line(c: CapabilityEvidence, style: str) -> str:
         GRADE_SAME_PATH: "on a nested control-flow path (depth>1, inside if/loop/switch)",
         GRADE_SAME_FUNCTION: "shares the function with the sink",
     }.get(c.grade, c.grade)
+
+    # Detect a privileged-equivalent constant on the source line.
+    # Only meaningful when the grade actually guards the sink path.
+    priv_cap: Optional[str] = None
+    if c.grade in (GRADE_DOMINATES, GRADE_SAME_FUNCTION):
+        priv_cap = _privileged_cap_constant_on_line(
+            c.location[0], c.location[1],
+        )
+
     if style == "stage_d":
         prefix = "Privilege gating — capability check near sink"
     elif style == "exploit_plan":
         prefix = "Constraint — capability required to reach sink"
     else:
         prefix = "Variant hint — capability check"
+
+    # Tier 1: global-creds check + root-equivalent constant.
+    if priv_cap is not None and c.cap_function in _GLOBAL_CRED_CAP_FUNCTIONS:
+        return (
+            f"{prefix}: `{c.cap_function}({priv_cap})` at "
+            f"{c.location[0]}:{c.location[1]} {fn_text} — "
+            f"{grade_phrase}. `{priv_cap}` is ROOT-EQUIVALENT "
+            f"(grants kernel-level powers: arbitrary memory access, "
+            f"module load, file DAC bypass — depending on the cap). "
+            f"`{c.cap_function}()` gates against GLOBAL credentials. "
+            f"Attacker must already hold this capability against the "
+            f"host root user to reach the sink; the bug is NOT a "
+            f"meaningful privilege escalation. Finding is effectively "
+            f"privilege-gated."
+        )
+
+    # Tier 2: namespace-scoped check + root-equivalent constant.
+    # The cap CAN be held by a userns admin without global root,
+    # so the bug is reachable via `unshare -U`.
+    if priv_cap is not None and c.cap_function in _NS_SCOPED_CAP_FUNCTIONS:
+        return (
+            f"{prefix}: `{c.cap_function}(..., {priv_cap})` at "
+            f"{c.location[0]}:{c.location[1]} {fn_text} — "
+            f"{grade_phrase}. `{priv_cap}` is root-equivalent ONLY "
+            f"against the init user namespace; `{c.cap_function}()` "
+            f"is NAMESPACE-SCOPED — a userns admin (created via "
+            f"`unshare -U` from an otherwise-unprivileged process) "
+            f"holds the cap inside their own ns. The bug IS "
+            f"reachable from unprivileged context; do NOT treat as "
+            f"privilege-gated. Mitigates only against pure-no-cap "
+            f"local attackers without userns availability."
+        )
+
+    # Tier 3: generic prose — unknown function family OR non-
+    # root-equivalent constant.
     return (
         f"{prefix}: `{c.cap_function}(...)` at "
         f"{c.location[0]}:{c.location[1]} {fn_text} — {grade_phrase}. "
