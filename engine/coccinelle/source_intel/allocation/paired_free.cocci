@@ -122,3 +122,59 @@ for _p in p:
         "message": "alloc_paired:" + str(alloc_fn) + ":free",
     }
     sys.stderr.write("COCCIRESULT:" + json.dumps(_m) + "\n")
+
+
+@paired_alloc_openssl@
+expression E;
+identifier alloc_fn = {
+    OPENSSL_malloc, OPENSSL_zalloc, OPENSSL_realloc, OPENSSL_strdup,
+    OPENSSL_strndup, OPENSSL_memdup, OPENSSL_secure_malloc,
+    OPENSSL_secure_zalloc, CRYPTO_malloc, CRYPTO_zalloc,
+    CRYPTO_secure_malloc, CRYPTO_secure_zalloc, BUF_strdup
+};
+position p;
+@@
+E = alloc_fn@p(...);
+... when != E = ...
+\( OPENSSL_free(E); \| CRYPTO_free(E); \| OPENSSL_secure_free(E); \| CRYPTO_secure_free(E); \)
+
+@script:python@
+p << paired_alloc_openssl.p;
+alloc_fn << paired_alloc_openssl.alloc_fn;
+@@
+import json, sys
+for _p in p:
+    _m = {
+        "file": _p.file,
+        "line": int(_p.line),
+        "rule": "paired_free",
+        "message": "alloc_paired:" + str(alloc_fn) + ":OPENSSL_free",
+    }
+    sys.stderr.write("COCCIRESULT:" + json.dumps(_m) + "\n")
+
+
+@paired_alloc_glib@
+expression E;
+identifier alloc_fn = {
+    g_malloc, g_malloc0, g_realloc, g_strdup, g_strndup,
+    g_new, g_new0, g_try_malloc, g_try_malloc0
+};
+position p;
+@@
+E = alloc_fn@p(...);
+... when != E = ...
+g_free(E);
+
+@script:python@
+p << paired_alloc_glib.p;
+alloc_fn << paired_alloc_glib.alloc_fn;
+@@
+import json, sys
+for _p in p:
+    _m = {
+        "file": _p.file,
+        "line": int(_p.line),
+        "rule": "paired_free",
+        "message": "alloc_paired:" + str(alloc_fn) + ":g_free",
+    }
+    sys.stderr.write("COCCIRESULT:" + json.dumps(_m) + "\n")

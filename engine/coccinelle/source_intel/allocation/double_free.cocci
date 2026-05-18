@@ -22,21 +22,12 @@
 
 @double_free_pattern@
 expression E;
+identifier reassign_fn;
 position p1, p2;
 @@
 kfree@p1(E);
 ... when != E = NULL
-    when != E = kmalloc(...)
-    when != E = kzalloc(...)
-    when != E = krealloc(...)
-    when != E = kcalloc(...)
-    when != E = kmalloc_array(...)
-    when != E = vmalloc(...)
-    when != E = vzalloc(...)
-    when != E = kvmalloc(...)
-    when != E = kvzalloc(...)
-    when != E = kstrdup(...)
-    when != E = kstrdup_const(...)
+    when != E = reassign_fn(...)
 kfree@p2(E);
 
 @script:python@
@@ -64,15 +55,12 @@ for _p in p2:
 
 @double_free_pattern_free@
 expression E;
+identifier reassign_fn;
 position p1, p2;
 @@
 free@p1(E);
 ... when != E = NULL
-    when != E = malloc(...)
-    when != E = calloc(...)
-    when != E = realloc(...)
-    when != E = strdup(...)
-    when != E = strndup(...)
+    when != E = reassign_fn(...)
 free@p2(E);
 
 @script:python@
@@ -94,5 +82,38 @@ for _p in p2:
         "line": int(_p.line),
         "rule": "double_free",
         "message": "double_free:second:free",
+    }
+    sys.stderr.write("COCCIRESULT:" + json.dumps(_m) + "\n")
+
+
+@double_free_openssl@
+expression E;
+identifier reassign_fn;
+position p1, p2;
+@@
+OPENSSL_free@p1(E);
+... when != E = NULL
+    when != E = reassign_fn(...)
+OPENSSL_free@p2(E);
+
+@script:python@
+p1 << double_free_openssl.p1;
+p2 << double_free_openssl.p2;
+@@
+import json, sys
+for _p in p1:
+    _m = {
+        "file": _p.file,
+        "line": int(_p.line),
+        "rule": "double_free",
+        "message": "double_free:first:OPENSSL_free",
+    }
+    sys.stderr.write("COCCIRESULT:" + json.dumps(_m) + "\n")
+for _p in p2:
+    _m = {
+        "file": _p.file,
+        "line": int(_p.line),
+        "rule": "double_free",
+        "message": "double_free:second:OPENSSL_free",
     }
     sys.stderr.write("COCCIRESULT:" + json.dumps(_m) + "\n")

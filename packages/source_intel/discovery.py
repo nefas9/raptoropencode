@@ -122,6 +122,14 @@ def discover_aliases(target: Path) -> DiscoveryResult:
     Returns an empty :class:`DiscoveryResult` when ``target`` isn't a
     directory or contains no headers — same skip semantics as the
     rest of source_intel.
+
+    Scope: scans ``target`` recursively AND any sibling ``include/``
+    directory found by walking up to 2 parents. Many project
+    structures (openssl, curl, kernel out-of-tree builds, autotools
+    projects) keep public attribute-macro definitions in a parent
+    ``include/`` tree separate from the per-subsystem source. Without
+    the sibling walk, an operator narrowing the scan to one
+    subsystem (e.g. ``openssl/crypto``) gets zero aliases.
     """
     target = Path(target)
     if not target.is_dir():
@@ -131,27 +139,41 @@ def discover_aliases(target: Path) -> DiscoveryResult:
             sources_scanned=0,
         )
 
-    # Phase 1: scan headers, build macro_name → expansion map.
+    scan_roots: List[Path] = [target]
+    # Walk up at most 2 parents looking for a sibling include/ tree.
+    # 1 hop covers `proj/crypto` → `proj/include`; 2 hops covers
+    # `proj/sub/comp` → `proj/include`. Stop sooner if we hit /.
+    for hops in (1, 2):
+        if len(target.parts) <= hops:
+            break
+        parent = target.parents[hops - 1]
+        sibling_include = parent / "include"
+        if sibling_include.is_dir() and sibling_include not in scan_roots:
+            scan_roots.append(sibling_include)
+            break  # one include/ sibling is enough; deeper hops
+                   # tend to false-positive on system /usr/include.
+
+    # Phase 1: scan headers across all roots, build macro_name →
+    # expansion map. First definition wins per C semantics.
     macros: Dict[str, str] = {}
     headers_seen = 0
-    for entry in target.rglob("*"):
-        if headers_seen >= _MAX_FILES_HEADER_SCAN:
-            break
-        if not entry.is_file():
-            continue
-        if entry.suffix.lower() not in _HEADER_EXTS:
-            continue
-        headers_seen += 1
-        try:
-            text = _join_continuations(entry.read_text(errors="replace"))
-        except OSError:
-            continue
-        for m in _DEFINE_RE.finditer(text):
-            name = m.group(1)
-            expansion = m.group(2).strip()
-            # First definition wins (mirrors C preprocessor's first-define
-            # semantics when no #undef intervenes). Don't overwrite.
-            macros.setdefault(name, expansion)
+    for root in scan_roots:
+        for entry in root.rglob("*"):
+            if headers_seen >= _MAX_FILES_HEADER_SCAN:
+                break
+            if not entry.is_file():
+                continue
+            if entry.suffix.lower() not in _HEADER_EXTS:
+                continue
+            headers_seen += 1
+            try:
+                text = _join_continuations(entry.read_text(errors="replace"))
+            except OSError:
+                continue
+            for m in _DEFINE_RE.finditer(text):
+                name = m.group(1)
+                expansion = m.group(2).strip()
+                macros.setdefault(name, expansion)
 
     # Phase 2: classify each macro by family. A macro is in a family
     # iff its FULLY-RESOLVED expansion (recursive macro lookup up to

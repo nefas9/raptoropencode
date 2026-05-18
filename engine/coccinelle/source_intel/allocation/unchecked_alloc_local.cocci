@@ -26,7 +26,17 @@ identifier alloc_fn = {
     kmalloc, kzalloc, kmalloc_array, kcalloc, krealloc,
     kmemdup, kmemdup_nul, kmalloc_node, kzalloc_node,
     vmalloc, vzalloc, kvmalloc, kvzalloc,
-    malloc, calloc, realloc, strdup, strndup
+    malloc, calloc, realloc, strdup, strndup,
+    // OpenSSL family
+    OPENSSL_malloc, OPENSSL_zalloc, OPENSSL_realloc, OPENSSL_strdup,
+    OPENSSL_strndup, OPENSSL_memdup, OPENSSL_secure_malloc,
+    OPENSSL_secure_zalloc, CRYPTO_malloc, CRYPTO_zalloc,
+    CRYPTO_secure_malloc, CRYPTO_secure_zalloc, BUF_strdup,
+    // glib
+    g_malloc, g_malloc0, g_realloc, g_strdup, g_strndup,
+    g_new, g_new0, g_try_malloc, g_try_malloc0,
+    // Apache APR
+    apr_palloc, apr_pcalloc, apr_pstrdup, apr_pmemdup
 };
 position p;
 @@
