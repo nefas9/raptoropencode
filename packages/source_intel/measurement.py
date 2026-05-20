@@ -253,6 +253,39 @@ def _result_to_verdict(result) -> ValidatorVerdict:
     return ValidatorVerdict.UNCERTAIN
 
 
+def _aggregate(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Compute aggregate stats over a list of per-entry result dicts.
+
+    Each entry must have ``baseline_correct``, ``si_correct``, and
+    ``delta`` ∈ {improved, regressed, same}. Pure function — pulled
+    out of ``main`` so the math is testable without driving real
+    LLM calls.
+    """
+    n = len(results)
+    baseline_errors = sum(1 for r in results if not r["baseline_correct"])
+    si_errors = sum(1 for r in results if not r["si_correct"])
+    improved = sum(1 for r in results if r["delta"] == "improved")
+    regressed = sum(1 for r in results if r["delta"] == "regressed")
+    same = n - improved - regressed
+    err_rate_baseline = baseline_errors / n if n else 0.0
+    err_rate_si = si_errors / n if n else 0.0
+    err_reduction = (
+        (err_rate_baseline - err_rate_si) / err_rate_baseline * 100
+        if err_rate_baseline > 0 else 0.0
+    )
+    return {
+        "n": n,
+        "baseline_errors": baseline_errors,
+        "si_errors": si_errors,
+        "improved": improved,
+        "regressed": regressed,
+        "same": same,
+        "err_rate_baseline": err_rate_baseline,
+        "err_rate_si": err_rate_si,
+        "err_reduction": err_reduction,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.split("\n")[0],
@@ -384,27 +417,18 @@ def main() -> int:
         })
 
     # ---- aggregate ---------------------------------------------------
-    n = len(results)
-    baseline_errors = sum(1 for r in results if not r["baseline_correct"])
-    si_errors = sum(1 for r in results if not r["si_correct"])
-    improved = sum(1 for r in results if r["delta"] == "improved")
-    regressed = sum(1 for r in results if r["delta"] == "regressed")
-    same = n - improved - regressed
-    err_rate_baseline = baseline_errors / n if n else 0.0
-    err_rate_si = si_errors / n if n else 0.0
-    err_reduction = (
-        (err_rate_baseline - err_rate_si) / err_rate_baseline * 100
-        if err_rate_baseline > 0 else 0.0
-    )
+    stats = _aggregate(results)
 
     print()
-    print(f"=== aggregate ({n} entries) ===")
-    print(f"  baseline errors:    {baseline_errors}/{n} ({err_rate_baseline:.1%})")
-    print(f"  source_intel errors: {si_errors}/{n} ({err_rate_si:.1%})")
-    print(f"  improved by SI:      {improved}")
-    print(f"  regressed by SI:     {regressed}")
-    print(f"  same verdict:        {same}")
-    print(f"  error reduction:     {err_reduction:.1f}%  "
+    print(f"=== aggregate ({stats['n']} entries) ===")
+    print(f"  baseline errors:    {stats['baseline_errors']}/{stats['n']} "
+          f"({stats['err_rate_baseline']:.1%})")
+    print(f"  source_intel errors: {stats['si_errors']}/{stats['n']} "
+          f"({stats['err_rate_si']:.1%})")
+    print(f"  improved by SI:      {stats['improved']}")
+    print(f"  regressed by SI:     {stats['regressed']}")
+    print(f"  same verdict:        {stats['same']}")
+    print(f"  error reduction:     {stats['err_reduction']:.1f}%  "
           f"(exit gate: ≥10%)")
 
     if args.output:
