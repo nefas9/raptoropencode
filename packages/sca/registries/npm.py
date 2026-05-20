@@ -34,6 +34,55 @@ _DEFAULT_TTL = 24 * 3600
 # layer.
 _NPM_META_MAX_BYTES = 200 * 1024 * 1024
 
+# Fields stripped from per-version dicts before cache write. None of
+# RAPTOR's SCA passes (license, yanked, transitive_drop, evaluator,
+# install-hook review, bump) read these — they're either npm registry
+# internals, non-security metadata, or build-time-only data. Stripping
+# at fetch saves disk + cuts cold-parse cost on subsequent reads.
+# Conservative list — when in doubt, leave it in.
+#
+# ``devDependencies`` is the single biggest win: on a representative
+# 31 MB envelope (next.js, 3768 versions) it accounted for 16 MB (52%).
+# RAPTOR scans the runtime ``dependencies`` graph for vulns, not the
+# dev-tooling graph, so dropping devDeps is safe.
+_NPM_VERSION_STRIP_FIELDS = frozenset((
+    "devDependencies",
+    "_defaultsLoaded", "_engineSupported", "_id", "_nodeVersion",
+    "_npmJsonOpts", "_npmOperationalInternal", "_npmVersion",
+    "author", "bugs", "description", "directories", "engines",
+    "keywords", "main", "maintainers", "repository", "taskr",
+))
+
+# Top-level fields with no RAPTOR consumer.
+_NPM_TOP_STRIP_FIELDS = frozenset((
+    "_id", "_rev", "_attachments", "readme", "readmeFilename",
+    "homepage", "author", "bugs", "contributors", "description",
+    "keywords", "repository", "users", "maintainers",
+))
+
+
+def _strip_npm_metadata(data: object) -> object:
+    """Strip security-irrelevant fields from an npm registry envelope.
+
+    Returns ``data`` unchanged when it isn't a dict (404 sentinel ``None``
+    or upstream schema drift). In-place mutation on a defensive shallow
+    copy of the outer dict; per-version dicts are mutated in place since
+    the caller doesn't retain references.
+    """
+    if not isinstance(data, dict):
+        return data
+    out = dict(data)
+    for k in _NPM_TOP_STRIP_FIELDS:
+        out.pop(k, None)
+    versions = out.get("versions")
+    if isinstance(versions, dict):
+        for v_meta in versions.values():
+            if isinstance(v_meta, dict):
+                for k in _NPM_VERSION_STRIP_FIELDS:
+                    v_meta.pop(k, None)
+    return out
+
+
 # Loose semver matcher; the registry's keys are canonical semver but we
 # guard against pre-release tags being treated as stable. Pre-releases
 # follow the ``-`` convention: ``1.0.0-rc.1``, ``1.0.0-beta``, etc.
@@ -113,6 +162,12 @@ class NpmClient:
                 # detectors don't re-query the same dead name.
                 self._cache.put(cache_key, None, ttl_seconds=self._ttl)
             return None
+        # Strip security-irrelevant fields before caching: devDeps,
+        # npm internals, non-security metadata. See
+        # ``_strip_npm_metadata`` for the rationale. Returns the
+        # stripped envelope so subsequent in-process callers don't
+        # see a different shape than the cache.
+        data = _strip_npm_metadata(data)
         if self._cache is not None:
             self._cache.put(cache_key, data, ttl_seconds=self._ttl)
         return data

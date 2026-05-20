@@ -30,6 +30,70 @@ _CACHE_KEY_PREFIX = "pypi-versions"
 _DEFAULT_TTL = 24 * 3600
 
 
+# Top-level fields with no RAPTOR consumer.
+#   - ``ownership``: package-ownership history (security irrelevant).
+#   - ``urls``: same content as ``releases[latest]`` (redundant).
+#   - ``vulnerabilities``: PyPI's own advisory feed; RAPTOR uses OSV +
+#     NVD as the canonical sources, not this.
+#   - ``last_serial``: PyPI-internal counter, no consumer.
+_PYPI_TOP_STRIP_FIELDS = frozenset((
+    "ownership", "urls", "vulnerabilities", "last_serial",
+))
+
+# Per-release-file fields RAPTOR doesn't read.
+#   - ``md5_digest``: redundant with the sha256 in ``digests``.
+#   - ``has_sig``: deprecated; PyPI dropped GPG signature support.
+#   - ``comment_text``: rarely populated; no consumer.
+#   - ``upload_time``: redundant with ``upload_time_iso_8601``;
+#     RAPTOR's age checks use the ISO field.
+#   - ``downloads``: always ``-1`` (deprecated stats).
+_PYPI_RELEASE_FILE_STRIP_FIELDS = frozenset((
+    "md5_digest", "has_sig", "comment_text", "upload_time", "downloads",
+))
+
+# Cosmetic ``info`` fields. RAPTOR reads ``license``,
+# ``license_expression``, ``requires_dist``, ``requires_python``,
+# ``yanked``, ``yanked_reason``, ``version``, ``name`` — and a small
+# few via the per-version block. Everything else in ``info`` is
+# author/project metadata with no security consumer.
+_PYPI_INFO_STRIP_FIELDS = frozenset((
+    "author", "author_email", "bugtrack_url", "classifiers",
+    "description", "description_content_type", "docs_url",
+    "download_url", "downloads", "dynamic", "home_page", "keywords",
+    "maintainer", "maintainer_email", "package_url", "platform",
+    "project_url", "project_urls", "provides_extra", "release_url",
+    "summary",
+))
+
+
+def _strip_pypi_metadata(data: object) -> object:
+    """Strip security-irrelevant fields from a PyPI envelope.
+
+    Returns ``data`` unchanged when it isn't a dict (404 sentinel
+    ``None`` or upstream schema drift). Mutates a defensive shallow
+    copy of the outer dict; nested ``releases`` and ``info`` blocks
+    are mutated in place since the caller doesn't retain references.
+    """
+    if not isinstance(data, dict):
+        return data
+    out = dict(data)
+    for k in _PYPI_TOP_STRIP_FIELDS:
+        out.pop(k, None)
+    releases = out.get("releases")
+    if isinstance(releases, dict):
+        for files in releases.values():
+            if isinstance(files, list):
+                for f in files:
+                    if isinstance(f, dict):
+                        for k in _PYPI_RELEASE_FILE_STRIP_FIELDS:
+                            f.pop(k, None)
+    info = out.get("info")
+    if isinstance(info, dict):
+        for k in _PYPI_INFO_STRIP_FIELDS:
+            info.pop(k, None)
+    return out
+
+
 class PyPIClient:
     """List versions from PyPI's JSON API."""
 
@@ -112,6 +176,9 @@ class PyPIClient:
             if self._cache is not None:
                 self._cache.put(cache_key, None, ttl_seconds=self._ttl)
             return None
+        # Strip security-irrelevant fields before caching. See
+        # ``_strip_pypi_metadata`` for the rationale.
+        data = _strip_pypi_metadata(data)
         if self._cache is not None:
             self._cache.put(cache_key, data, ttl_seconds=self._ttl)
         return data
