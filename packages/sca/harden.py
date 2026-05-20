@@ -306,6 +306,15 @@ def plan(
 
     out: List[HardenCandidate] = []
     for dep in raw_deps:
+        if dep.commented_out:
+            # Commented-out lines (``# pkg==X`` in requirements.txt or
+            # ``# pip install foo`` in a shell script) are documentation,
+            # not active deps. The findings layer already downgrades
+            # their severity to ``info`` so CI gates don't block; harden
+            # mirrors that policy by refusing to propose bumps for them.
+            # Pinning a commented-out hint would rewrite a comment that
+            # the operator deliberately left disabled.
+            continue
         out.append(_plan_one(dep, registries=registries, osv=osv,
                              kev=kev, epss=epss,
                              offline=offline, allow_major=allow_major,

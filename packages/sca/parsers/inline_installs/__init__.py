@@ -190,6 +190,18 @@ def _scan_shell_lines(
             if best is None:
                 continue
             mgr, m = best
+            if commented and m.start() != 0:
+                # Comment lines have their leading ``#`` + whitespace
+                # stripped before reaching here, so an install verb at
+                # the very start (``m.start() == 0``) reflects a
+                # deliberate ``# pip install foo==1.0``-style
+                # disabled-install hint — keep it. Anything else is
+                # prose that happens to mention ``pip install`` /
+                # ``apt install`` mid-sentence (e.g. ``# uv pip
+                # install keeps a single source of truth``), where
+                # tokens past the install verb are English words, not
+                # package names. Skip to avoid emitting bogus deps.
+                continue
             args = sub[m.end():]
             for name, version, pin in mgr.parse_args(args):
                 deps.append(_make_dep(

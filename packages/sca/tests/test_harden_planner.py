@@ -481,3 +481,48 @@ def test_count_actionable_ecosystem_allowlist() -> None:
                              allow_major_without_review=False,
                              allow_degraded=False,
                              ecosystem_allowlist=set()) == 0
+
+
+# ---------------------------------------------------------------------------
+# commented_out deps are skipped by the planner
+# ---------------------------------------------------------------------------
+
+def test_plan_skips_commented_out_deps(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Commented-out hint lines (``# pkg==X`` in requirements.txt, or
+    ``# pip install foo==1.0`` in shell) are documentation, not active
+    deps. ``findings.py`` already downgrades their severity to ``info``;
+    ``harden`` must match the same policy by refusing to propose bumps
+    for them.
+
+    Discovered 2026-05-20: harden promoted ``PyPI:a → 1.0``,
+    ``PyPI:single → 0.2.0``, etc., from a comment in a GHA workflow
+    (``# grep + uv pip install keeps a single source of truth.``).
+    The parser FP was fixed separately; this is the defence-in-depth
+    layer that catches a parser regression before it reaches the
+    operator-visible patch.
+    """
+    from packages.sca import harden as harden_mod
+
+    real = _dep(name="real-dep", version="1.0", pin_style=PinStyle.EXACT)
+    ghost = _dep(name="ghost-dep", version="1.0", pin_style=PinStyle.EXACT)
+    object.__setattr__(ghost, "commented_out", True)
+
+    monkeypatch.setattr(harden_mod, "find_manifests",
+                        lambda _t: [Path("/fake/requirements.txt")])
+    monkeypatch.setattr(harden_mod, "parse_manifest",
+                        lambda _m: [real, ghost])
+
+    candidates = harden_mod.plan(
+        target=tmp_path,
+        registries={"PyPI": _FakeRegistry(["1.0", "1.5"])},
+        osv=_FakeOsv({"1.0": [], "1.5": []}),
+        offline=False, allow_major=False,
+    )
+
+    names = [c.name for c in candidates]
+    assert "real-dep" in names
+    assert "ghost-dep" not in names, (
+        "harden must not propose bumps for commented-out deps"
+    )

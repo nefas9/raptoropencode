@@ -783,3 +783,87 @@ def test_pip_compatible_release_unchanged(tmp_path: Path):
     assert len(deps) == 1
     assert deps[0].pin_style.value == "tilde"
     assert deps[0].version == "6.0"
+
+
+# ---------------------------------------------------------------------------
+# Comment-only-at-start rule (parser-FP defence)
+# ---------------------------------------------------------------------------
+
+def test_gha_workflow_prose_mentioning_pip_install_does_not_extract(
+    tmp_path: Path,
+) -> None:
+    """Free-form comments that happen to contain ``pip install``
+    mid-sentence must NOT emit deps. Discovered 2026-05-20 against
+    ``.github/workflows/lint.yml`` which had::
+
+        # grep + uv pip install keeps a single source of truth.
+
+    The parser was stripping the leading ``#`` and treating the
+    remainder as shell code, then taking the tokens after
+    ``pip install`` as package names (``keeps``, ``a``, ``single``,
+    ``source``, ``of``, ``truth.``). Several of those (``a``,
+    ``single``, ``source``, ``of``) are real squatted PyPI packages
+    that ``harden`` then proposed promoting — operationally
+    serious.
+
+    Fix: when a line was commented, only accept matches whose
+    install verb starts at position 0 of the (post-``#``-strip)
+    body.
+    """
+    wf = """name: lint
+on: [push]
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          # grep + uv pip install keeps a single source of truth.
+          uv pip install "$(grep -E '^ruff==' requirements-dev.txt)"
+"""
+    p = _write(tmp_path, wf, "lint.yml")
+    deps = parse_gha_workflow(p)
+    # The real ``uv pip install "..."`` line uses ``$(grep ...)`` so
+    # the resolved arg isn't a literal pkg name — the parser declines
+    # to emit anything actionable from it. That's expected.
+    # The KEY assertion: no bogus ``a`` / ``single`` / ``source`` /
+    # ``of`` / ``keeps`` / ``truth`` deps from the comment line.
+    bogus_names = {"a", "single", "source", "of", "keeps", "truth"}
+    extracted_names = {d.name for d in deps}
+    assert not (bogus_names & extracted_names), (
+        f"parser extracted bogus packages from prose comment: "
+        f"{bogus_names & extracted_names}"
+    )
+
+
+def test_shell_commented_pip_install_at_start_still_extracts(
+    tmp_path: Path,
+) -> None:
+    """The deliberate ``# pip install foo==1.0`` hint convention
+    must still work — the verb is at the start of the comment
+    body, so ``m.start() == 0`` and extraction proceeds."""
+    p = _write(tmp_path,
+               "#!/bin/sh\n# pip install django==4.2.7\n",
+               "install.sh")
+    deps = parse_shell_script(p)
+    assert len(deps) == 1
+    assert deps[0].name == "django"
+    assert deps[0].version == "4.2.7"
+    assert deps[0].commented_out is True
+
+
+def test_shell_prose_with_embedded_pip_install_does_not_extract(
+    tmp_path: Path,
+) -> None:
+    """Shell-script equivalent of the lint.yml regression. Prose
+    that mentions ``pip install`` partway through a sentence is not
+    an install hint."""
+    p = _write(tmp_path,
+               "#!/bin/sh\n"
+               "# don't forget to pip install requests before running\n",
+               "setup.sh")
+    deps = parse_shell_script(p)
+    extracted_names = {d.name for d in deps}
+    # ``requests``, ``before``, ``running`` would all be bogus.
+    assert not extracted_names, (
+        f"parser extracted from prose comment: {extracted_names}"
+    )
