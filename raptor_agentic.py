@@ -1260,7 +1260,19 @@ Examples:
             rc = semgrep_proc.returncode
         except subprocess.TimeoutExpired:
             semgrep_proc.kill()
-            semgrep_proc.communicate()
+            # Bound the post-kill drain — pre-fix bare
+            # ``communicate()`` had no timeout and could wedge on a
+            # child stuck in uninterruptible IO inside the sandbox.
+            # 30s is generous for a kill-9'd process to release its
+            # FDs; on TimeoutExpired here we abandon the streams
+            # (FDs leaked, but the kill has already been sent).
+            try:
+                semgrep_proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "Semgrep child did not drain after kill; "
+                    "abandoning communicate (FDs may leak)"
+                )
             rc = -1
             print("❌ Semgrep scan timed out (30m)")
             logger.error("Semgrep scan timed out")
@@ -1325,7 +1337,14 @@ Examples:
             rc = codeql_proc.returncode
         except subprocess.TimeoutExpired:
             codeql_proc.kill()
-            codeql_proc.communicate()
+            # See Semgrep post-kill drain above for the rationale.
+            try:
+                codeql_proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "CodeQL child did not drain after kill; "
+                    "abandoning communicate (FDs may leak)"
+                )
             rc = -1
             print("❌ CodeQL scan timed out (30m)")
             logger.error("CodeQL scan timed out")

@@ -287,7 +287,23 @@ class LLMDispatcher:
             self._tokens[token] = rec
 
         read_fd, write_fd = os.pipe()
-        os.write(write_fd, token.encode("ascii"))
+        try:
+            os.write(write_fd, token.encode("ascii"))
+        except OSError:
+            # OS-level write failure (BrokenPipeError, ENOSPC,
+            # EBADF after a fork-race). Close BOTH FDs to avoid
+            # leaking the pipe — pre-fix only the success path
+            # closed write_fd and the read_fd was returned to the
+            # caller, so a failed write leaked both ends.
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
+            raise
         os.close(write_fd)
         # Mark inheritable so subprocess.Popen(pass_fds=...) can
         # forward it to the child. By default Python sets CLOEXEC.

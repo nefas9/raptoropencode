@@ -401,6 +401,12 @@ class LogStreamer:
                     continue
         finally:
             sel.unregister(self._proc.stdout)
+            # On Linux DefaultSelector is an epoll FD; explicit
+            # close() releases the kernel-side FD immediately
+            # instead of waiting for GC. Long-lived audit scenarios
+            # that re-warm-up otherwise accumulate epoll FDs over
+            # the process lifetime.
+            sel.close()
             # Reap the warm-up child. With (deny default) the exec
             # itself is denied, so sandbox-exec exits ~immediately
             # with non-zero. Wait briefly; terminate as a safety net.
