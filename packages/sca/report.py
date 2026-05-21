@@ -98,6 +98,7 @@ def render_markdown_report(
     cache_misses: Optional[int] = None,
     cache_evictions: Optional[int] = None,
     generated_at: Optional[datetime] = None,
+    parse_failures: Sequence = (),
 ) -> str:
     """Return the full report as a single markdown string."""
     generated_at = generated_at or datetime.now(timezone.utc)
@@ -133,6 +134,8 @@ def render_markdown_report(
         cache_misses=cache_misses,
         cache_evictions=cache_evictions,
     ))
+    if parse_failures:
+        parts.append(_render_parse_failures_section(parse_failures))
     if sorted_vulns:
         parts.append(_render_vuln_section(sorted_vulns))
     if sorted_supply_chain:
@@ -147,6 +150,35 @@ def render_markdown_report(
                      "supply-chain or license issues detected for "
                      "the analysed dependency set.\n")
     return "\n".join(parts).rstrip() + "\n"
+
+
+def _render_parse_failures_section(failures) -> str:
+    """Render a high-visibility callout for manifest parser errors.
+
+    SCA parsers swallow malformed-input errors and return ``[]``
+    so one bad ``pom.xml`` doesn't abort the whole run, but that
+    means an operator scanning a tree where every manifest is
+    corrupt gets back ``0 deps analysed`` with no on-report
+    indication. The section emits one bullet per failure so
+    operators can fix the manifest instead of mistaking the
+    empty result for a clean project. Section sits between the
+    summary and the findings so it's visible immediately.
+    """
+    lines = [
+        "## ⚠ Parser warnings\n",
+        f"_{len(failures)} manifest(s) could not be parsed —"
+        " the dependency set below DOES NOT include their"
+        " contents. Fix the underlying file or re-run for"
+        " complete coverage._\n",
+    ]
+    for f in failures:
+        # ``sanitise_string`` defangs control bytes from the
+        # parser error message; manifest paths are filesystem-
+        # local and operator-supplied so they go through as-is.
+        reason = sanitise_string(f.reason, max_chars=_DETAIL_MAX_CHARS)
+        lines.append(f"- `{f.path}` — {reason}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _render_license_section(findings) -> str:

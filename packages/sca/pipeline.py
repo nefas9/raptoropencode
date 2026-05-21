@@ -41,7 +41,7 @@ from .models import (
     VulnFinding,
 )
 from .osv import OsvClient
-from .parsers import parse_manifest
+from .parsers import capture_parse_failures, parse_manifest
 from .reachability import scan as scan_reachability
 from .report import render_markdown_report, write_markdown_report
 from .sarif import write_sarif
@@ -205,6 +205,11 @@ class RunResult:
     triage_run: bool = False
     llm_cost: float = 0.0
     license_findings: int = 0
+    # Swallowed parser warnings — pom.xml malformed, Pipfile.lock
+    # truncated, etc. Surfaced in report.md so operators don't
+    # mistake an empty result for a clean project. Empty when no
+    # parser failed.
+    parse_failures: List = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +303,7 @@ def run_sca(
             for w in sbom_warnings:
                 logger.warning("sca.pipeline: SBOM: %s", w)
             manifests = []   # no manifests when SBOM-imported
+            parse_failures: List = []
         else:
             manifests = find_manifests(target)
             if not options.enable_inline_installs:
@@ -305,8 +311,9 @@ def run_sca(
                     m for m in manifests if m.ecosystem != "Inline"
                 ]
             raw_deps: List[Dependency] = []
-            for m in manifests:
-                raw_deps.extend(parse_manifest(m))
+            with capture_parse_failures() as parse_failures:
+                for m in manifests:
+                    raw_deps.extend(parse_manifest(m))
     finally:
         # Clear the resolver so test runs of subsequent scans (or
         # libraries that import pom.parse directly after pipeline)
@@ -836,6 +843,7 @@ def run_sca(
         cache_hits=cache.hits,
         cache_misses=cache.misses,
         cache_evictions=cache.memo_evictions,
+        parse_failures=parse_failures,
     )
     write_markdown_report(report_path, md)
 
@@ -924,6 +932,7 @@ def run_sca(
         llm_reviews_failed=llm_reviews_failed,
         triage_run=triage_run,
         llm_cost=llm_cost,
+        parse_failures=list(parse_failures),
     )
 
 

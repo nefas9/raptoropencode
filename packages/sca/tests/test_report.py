@@ -83,6 +83,50 @@ def test_empty_report_states_no_findings(tmp_path: Path) -> None:
     assert "Dependencies analysed: **42**" in md
 
 
+def test_report_surfaces_parser_failures(tmp_path: Path) -> None:
+    """Parser warnings (malformed pom.xml, broken Pipfile.lock,
+    etc.) must show in report.md so operators don't mistake an
+    empty result for a clean project. Section heading and
+    per-failure bullets verified."""
+    from packages.sca.parsers import ParseFailure
+
+    md = render_markdown_report(
+        target=tmp_path,
+        deps_analysed=0,
+        vuln_findings=[],
+        hygiene_findings=[],
+        parse_failures=[
+            ParseFailure(
+                path=tmp_path / "pom.xml",
+                reason="mismatched tag: line 6, column 6",
+            ),
+            ParseFailure(
+                path=tmp_path / "Pipfile.lock",
+                reason="Expecting property name enclosed in double quotes",
+            ),
+        ],
+    )
+    assert "Parser warnings" in md
+    assert "2 manifest(s) could not be parsed" in md
+    assert "pom.xml" in md
+    assert "Pipfile.lock" in md
+    assert "mismatched tag" in md
+
+
+def test_report_no_parser_section_when_no_failures(
+    tmp_path: Path,
+) -> None:
+    """Default-empty ``parse_failures`` arg must not emit the
+    warnings section — quiet output on the happy path."""
+    md = render_markdown_report(
+        target=tmp_path,
+        deps_analysed=10,
+        vuln_findings=[],
+        hygiene_findings=[],
+    )
+    assert "Parser warnings" not in md
+
+
 def test_report_includes_severity_table_and_kev_badge() -> None:
     d = _dep()
     findings = build_vuln_findings(

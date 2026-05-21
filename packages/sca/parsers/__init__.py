@@ -29,12 +29,117 @@ Parser failure policy:
 from __future__ import annotations
 
 import logging
+import re
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Protocol
+from typing import Callable, Dict, Iterator, List, Optional, Protocol
 
 from ..models import Dependency, Manifest
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ParseFailure:
+    """One swallowed parser warning surfaced for the run report.
+
+    ``parsers/<eco>/parse`` modules catch I/O / syntax errors
+    internally and return ``[]`` rather than crash the pipeline —
+    correct policy for individual parsers, but operationally
+    invisible: an operator running ``raptor-sca`` against a tree
+    where every pom.xml is malformed gets back "0 deps analysed"
+    with no indication of WHY. This record lets the runner expose
+    the failure in ``report.md`` so the operator can fix the
+    manifest instead of mistaking the empty result for a clean
+    project.
+    """
+
+    path: Path
+    reason: str
+
+
+# Pattern matching the warning shape every parser emits when it
+# catches a parse error. The format (``sca.parsers.<eco>: <kind>
+# parse failed for <path>: <message>``) is stable across the
+# codebase — see ``pom.py``, ``pipfile_lock.py``,
+# ``package_lock_json.py``, etc. The path captured is the
+# parser's view of the manifest, which is what we want to show
+# operators.
+_PARSE_FAILURE_RE = re.compile(
+    r"sca\.parsers\.[\w_]+:\s+"
+    r"(?P<kind>\w+(?:\s\w+)?)\s+parse failed for\s+"
+    r"(?P<path>.+?):\s+(?P<reason>.+)$"
+)
+
+
+class _ParseFailureCollector(logging.Handler):
+    """Logging handler that captures ``sca.parsers.*`` parse-failed
+    warnings into a thread-local list.
+
+    Attached/detached around the discovery stage via
+    :func:`capture_parse_failures`. Catches the warnings parsers
+    already emit (no per-parser source edit), parses the path +
+    reason out of the formatted message, and surfaces them on the
+    run report.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.failures: List[ParseFailure] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage()
+        except Exception:                               # noqa: BLE001
+            return
+        m = _PARSE_FAILURE_RE.search(msg)
+        if m is None:
+            return
+        path_str = m.group("path").strip()
+        reason = m.group("reason").strip()
+        try:
+            path = Path(path_str)
+        except (TypeError, ValueError):
+            return
+        self.failures.append(ParseFailure(path=path, reason=reason))
+
+
+# Thread-local collector ref so concurrent runs (rare today but
+# defensible — pytest collection, embedded scans) don't bleed into
+# one another's failure lists.
+_TLS = threading.local()
+
+
+@contextmanager
+def capture_parse_failures() -> Iterator[List[ParseFailure]]:
+    """Capture parser-emitted parse-failed warnings for the
+    duration of the context.
+
+    Usage::
+
+        with capture_parse_failures() as failures:
+            for m in manifests:
+                parse_manifest(m)
+        # ``failures`` now holds one ``ParseFailure`` per swallowed
+        # parser warning matching the canonical format string.
+
+    Attaches a logging handler at the ``packages.sca.parsers``
+    logger so warnings from any descendent parser (e.g.
+    ``packages.sca.parsers.pom``, ``packages.sca.parsers.pipfile_lock``)
+    propagate through and get captured. Detaches on exit so a
+    pipeline failure doesn't leak the handler across runs.
+    """
+    handler = _ParseFailureCollector()
+    parsers_logger = logging.getLogger(__name__)
+    parsers_logger.addHandler(handler)
+    _TLS.collector = handler
+    try:
+        yield handler.failures
+    finally:
+        parsers_logger.removeHandler(handler)
+        _TLS.collector = None
 
 
 class ManifestParser(Protocol):

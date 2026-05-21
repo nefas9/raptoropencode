@@ -240,6 +240,8 @@ def main(argv=None) -> int:
             no_cache=args.no_cache,
             sarif_dirs=sarif_dirs,
             profile=args.sandbox,
+            audit=args.audit,
+            audit_verbose=args.audit_verbose,
         )
     else:
         result = analyse(
@@ -254,8 +256,22 @@ def main(argv=None) -> int:
     return 0 if result.get("status") == "ok" else 1
 
 
-def _run_sandboxed(*, target, output_dir, offline, no_cache, sarif_dirs, profile):
-    """Run analyse() inside a sandbox context."""
+def _run_sandboxed(
+    *, target, output_dir, offline, no_cache, sarif_dirs, profile,
+    audit: bool = False, audit_verbose: bool = False,
+):
+    """Run analyse() inside a sandbox context.
+
+    ``audit`` / ``audit_verbose`` pair with
+    :func:`core.sandbox.context.sandbox`'s audit knob: when set,
+    Landlock filesystem denials and proxy host-allowlist
+    refusals get appended to ``<output_dir>/sandbox-audit.jsonl``
+    so operators can verify the sandbox engaged (and spot any
+    accidentally-blocked read that's degrading the run). Without
+    these wired through, the agent.py CLI exposes ``--audit`` but
+    the flag is silently inert — surfaced by the Tier-7 dev E2E
+    sweep.
+    """
     try:
         from core.sandbox.context import sandbox
     except ImportError:
@@ -272,6 +288,9 @@ def _run_sandboxed(*, target, output_dir, offline, no_cache, sarif_dirs, profile
         use_egress_proxy=True,
         proxy_hosts=_compose_proxy_hosts(target),
         caller_label="sca-agent",
+        audit=audit,
+        audit_verbose=audit_verbose,
+        audit_run_dir=str(output_dir) if audit else None,
     ):
         return analyse(
             target=target, output_dir=output_dir,
