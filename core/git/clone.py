@@ -122,6 +122,14 @@ def get_safe_git_env() -> Dict[str, str]:
 #   - core.sshCommand=ssh: prevents per-repo SSH command override.
 #   - protocol.file.allow=user: refuses file:// URLs as remotes.
 #   - protocol.ext.allow=never: refuses ext:: protocol shells.
+#   - core.hooksPath=/dev/null: per-repo hooks directory pointer
+#     (git ≥2.9). Hostile .git/config setting
+#     ``core.hooksPath=.attacker-hooks`` fires arbitrary scripts on
+#     every git op against the clone; pointing it at /dev/null
+#     bypasses hook execution entirely.
+#   - credential.helper=: per-repo credential helper RCE
+#     (CVE-2017-1000117 family).
+#   - core.gitProxy=: per-repo proxy command RCE.
 #
 # Use `safe_git_command(*args)` below instead of building bare
 # `["git", ...]` lists when operating on a target repo.
@@ -131,6 +139,9 @@ _SAFE_GIT_OVERRIDES = (
     "-c", "core.pager=cat",
     "-c", "core.askPass=true",
     "-c", "core.sshCommand=ssh",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "credential.helper=",
+    "-c", "core.gitProxy=",
     "-c", "protocol.file.allow=user",
     "-c", "protocol.ext.allow=never",
 )
