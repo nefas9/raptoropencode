@@ -96,9 +96,11 @@ def test_log4shell_kev_reachable_direct_scores_high():
     # after Vulnrichment integration) → 1.5972 (2026-05-22 second
     # ρ-aware refit after SSVC decoupling + CVSS-from-severity
     # fallback + RUSTSEC informational filter + SSVC Automatable
-    # wiring; refit could now push KEV_MULT further because SSVC
-    # weights live in their own constants).
-    assert comps["kev_multiplier"] == 1.5972
+    # wiring) → 1.7569 (2026-05-22 third ρ-aware refit after
+    # round-9 CPM + Gradle catalog corpus expansion; joint refit
+    # confirmed per-constant is at the basin floor on this corpus,
+    # making the +6pp ρ jump the right move to ship).
+    assert comps["kev_multiplier"] == 1.7569
 
 
 def test_log4shell_but_not_reachable_drops_to_low():
@@ -106,20 +108,20 @@ def test_log4shell_but_not_reachable_drops_to_low():
     well below the reachable scenario. The design's "~29" was an
     approximation; the exact bound depends on whether exposure is
     treated as 0 (not_reachable means no call sites) or 1. We use 0
-    — the natural reading — which gives ~28.5 post the 2026-05-21
-    ρ-aware refit (was ~18 pre-refit; the refit lifted KEV_MULT
-    and reduced REACH_NOT_REACHABLE_MAX_REDUCTION which together
-    raised the floor a not_reachable KEV vuln lands at). The
-    REACHABILITY-RATIO assertion below pins the structural intent
-    (not_reachable scores ≪ reachable) which is robust against
-    further weight drift."""
+    — the natural reading. Successive refits have lifted the floor
+    a not_reachable KEV vuln lands at: ~18 pre-refit → ~28.5 after
+    the 2026-05-21 ρ-aware refit → ~40 after the 2026-05-22 round-9
+    refit (KEV_MULT 1.5972 → 1.7569 propagates through the not-
+    reachable reduction). The REACHABILITY-RATIO assertion below
+    pins the structural intent (not_reachable scores ≪ reachable)
+    which is robust against further weight drift."""
     f = _finding(
         cvss=10.0, in_kev=True, epss=0.97,
         reach_verdict="not_reachable", reach_conf="high",
         exposure=0.0, depth=0,
     )
     score, _ = compute_risk_estimate(f, f.dependency)
-    assert score < 35, f"got {score}"
+    assert score < 45, f"got {score}"
     # And much lower than the reachable equivalent.
     reachable = _finding(
         cvss=10.0, in_kev=True, epss=0.97,

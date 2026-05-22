@@ -53,7 +53,7 @@ _CVSS_MISSING_DEFAULT = 5.0
 # KEV CVE with low CVSS still ranks above a non-KEV high-CVSS finding,
 # matching the "active exploitation > theoretical severity" priority.
 _KEV_FLOOR = 96.8
-_KEV_MULTIPLIER = 1.5972
+_KEV_MULTIPLIER = 1.7569
 
 # Exploit-evidence (Exploit-DB / Metasploit / GitHub PoC). KEV's the
 # strongest "actively exploited in the wild" signal, but it covers
@@ -66,13 +66,13 @@ _KEV_MULTIPLIER = 1.5972
 # in EDB. Floor is below KEV's so KEV-listed still wins on tied CVSS;
 # multiplier is smaller for the same reason — EDB/MSF/PoC are weaker
 # signals than active CISA-tracked exploitation.
-_EXPLOIT_EVIDENCE_FLOOR = 72.6
+_EXPLOIT_EVIDENCE_FLOOR = 79.86
 # Strictly below `_KEV_MULTIPLIER` — pinned by `is_admissible`'s
 # `exploit_evidence_strictly_below_kev` rule. A previous refit
 # pass set this to 1.21 which crossed KEV's 1.20; round-2 with
 # constraint-aware refit caught the violation. If KEV_MULT moves
 # later this constant has headroom to follow.
-_EXPLOIT_EVIDENCE_MULTIPLIER = 1.4399
+_EXPLOIT_EVIDENCE_MULTIPLIER = 1.5839
 
 # CISA Vulnrichment SSVC — pair of tier-floors mirroring KEV /
 # ExploitEvidence semantics but TUNED INDEPENDENTLY. Pre-fix
@@ -94,7 +94,7 @@ _EXPLOIT_EVIDENCE_MULTIPLIER = 1.4399
 # signal source, different coverage shape).
 _SSVC_ACTIVE_FLOOR = 96.8
 _SSVC_ACTIVE_MULTIPLIER = 1.452
-_SSVC_POC_FLOOR = 72.6
+_SSVC_POC_FLOOR = 79.86
 _SSVC_POC_MULTIPLIER = 1.4399
 
 # SSVC ``Automatable`` bonus. Applied on top of an SSVC tier
@@ -106,20 +106,20 @@ _SSVC_POC_MULTIPLIER = 1.4399
 # tier multiplier already reflects "exploit code exists"). Only
 # applies when ``Automatable=yes``; ``no`` / ``None`` carry no
 # multiplier (the SSVC tier alone applies).
-_SSVC_AUTOMATABLE_BONUS = 1.21
+_SSVC_AUTOMATABLE_BONUS = 1.331
 
 # EPSS — exploit probability in the wild. Even a 0% EPSS leaves 30%
 # weight (a vuln with no observed exploitation isn't impossible to
 # exploit; the floor reflects "unknown is not zero").
-_EPSS_FLOOR_MULTIPLIER = 0.363
-_EPSS_RANGE_MULTIPLIER = 0.567
+_EPSS_FLOOR_MULTIPLIER = 0.3993
+_EPSS_RANGE_MULTIPLIER = 0.5103
 _EPSS_MISSING_DEFAULT = 0.5
 
 # Reachability — confidently-not-reachable downgrades hard; uncertain
 # stays neutral. ``not_evaluated`` (no evidence either way) gets a
 # small penalty to nudge operators toward investigating.
-_REACH_NOT_REACHABLE_MAX_REDUCTION = 0.5103
-_REACH_NOT_EVALUATED_MULTIPLIER = 0.7574
+_REACH_NOT_REACHABLE_MAX_REDUCTION = 0.4593
+_REACH_NOT_EVALUATED_MULTIPLIER = 0.6817
 
 # Exposure — call-site density. Maps 0.0..1.0 onto 0.5..1.0 so a dep
 # imported once has half the weight of a dep imported throughout the

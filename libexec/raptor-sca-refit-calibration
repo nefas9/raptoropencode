@@ -91,6 +91,31 @@ def main() -> int:
              "applies; ecosystems with <100 findings will be "
              "rejected by the cold-start gate.",
     )
+    parser.add_argument(
+        "--joint", action="store_true",
+        help="run the joint refitter (multi-pass coordinate "
+             "descent with random restarts) instead of the "
+             "single-pass per-constant search. Catches inter-"
+             "constant interactions the single-pass misses, at "
+             "the cost of ~30-150s wall on a real corpus. "
+             "Improvement gate is vs single-pass — a no-gain "
+             "joint refit confirms per-constant is at the basin "
+             "floor on this corpus. Writes the report to "
+             "<corpus>/refit/<date>.joint.json so it doesn't "
+             "clobber a same-day single-pass run.",
+    )
+    parser.add_argument(
+        "--joint-restarts", type=int, default=None,
+        help="number of random restarts for joint refit "
+             "(default 4). Higher is more robust to local "
+             "optima but linearly more expensive.",
+    )
+    parser.add_argument(
+        "--joint-seed", type=int, default=None,
+        help="seed for the joint refitter's random-restart "
+             "sampling. Deterministic when set — CI auto-PRs "
+             "should pass this so refits are reproducible.",
+    )
     args = parser.parse_args()
 
     corpus_dir = (
@@ -107,22 +132,39 @@ def main() -> int:
 
     from packages.sca.calibration.refit import (
         DEFAULT_IMPROVEMENT_THRESHOLD, DEFAULT_MAX_DELTA,
-        grid_search_refit,
+        grid_search_refit, joint_grid_search_refit,
     )
-    report = grid_search_refit(
-        corpus_dir,
-        max_delta=(
-            args.max_delta if args.max_delta is not None
-            else DEFAULT_MAX_DELTA
-        ),
-        improvement_threshold=(
-            args.improvement_threshold
-            if args.improvement_threshold is not None
-            else DEFAULT_IMPROVEMENT_THRESHOLD
-        ),
-        out_path=args.out,
-        ecosystem_filter=args.ecosystem,
+    max_delta = (
+        args.max_delta if args.max_delta is not None
+        else DEFAULT_MAX_DELTA
     )
+    improvement_threshold = (
+        args.improvement_threshold
+        if args.improvement_threshold is not None
+        else DEFAULT_IMPROVEMENT_THRESHOLD
+    )
+    if args.joint:
+        joint_kwargs = {}
+        if args.joint_restarts is not None:
+            joint_kwargs["restarts"] = args.joint_restarts
+        if args.joint_seed is not None:
+            joint_kwargs["seed"] = args.joint_seed
+        report = joint_grid_search_refit(
+            corpus_dir,
+            max_delta=max_delta,
+            improvement_threshold=improvement_threshold,
+            out_path=args.out,
+            ecosystem_filter=args.ecosystem,
+            **joint_kwargs,
+        )
+    else:
+        report = grid_search_refit(
+            corpus_dir,
+            max_delta=max_delta,
+            improvement_threshold=improvement_threshold,
+            out_path=args.out,
+            ecosystem_filter=args.ecosystem,
+        )
 
     print(
         f"raptor-sca-refit-calibration: status={report.status}, "

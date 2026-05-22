@@ -398,6 +398,446 @@ def grid_search_refit(
     )
 
 
+# ---------------------------------------------------------------------------
+# Joint refitter — multi-pass coordinate descent with random restarts.
+# ---------------------------------------------------------------------------
+#
+# The per-constant ``grid_search_refit`` above evaluates each constant
+# in isolation, treating the rest of the formula as fixed at its
+# CURRENT values. That misses interactions: pairs of constants where
+# the optimal move for C₁ depends on C₂ already having moved (e.g.
+# raising ``_KEV_MULTIPLIER`` alone hurts ρ, but raising
+# ``_KEV_MULTIPLIER`` AND lowering ``_EPSS_FLOOR_MULTIPLIER`` together
+# helps both).
+#
+# Full cartesian search over 16 constants is intractable
+# (3¹⁶ ≈ 43M evaluations at ±max_delta-bracket grid). The realistic
+# approach is **coordinate descent with random restarts**:
+#
+#   1. Pick a starting point (current_constants for restart 0; random
+#      admissible point inside the ±max_delta bracket for the others).
+#   2. PASS: for each constant, find its best value given the current
+#      values of all other constants. Apply the winner before moving
+#      to the next constant.
+#   3. Repeat passes until no constant moves (converged) or
+#      ``_MAX_JOINT_PASSES`` reached.
+#   4. Repeat steps 1-3 across ``_DEFAULT_JOINT_RESTARTS`` restarts;
+#      return the best metric tuple seen across all restarts.
+#
+# Total drift bound: every candidate considered in step 2 is clamped
+# to ``[starting * (1 - max_delta), starting * (1 + max_delta)]`` —
+# the ±max_delta cap from the STARTING constants, not the iteration
+# constants. So no single refit run can move a constant by more than
+# ±max_delta total, regardless of how many passes the coordinate
+# descent ran. This preserves the safety-floor semantics that made
+# the per-constant refitter safe to auto-apply.
+#
+# Improvement gate: joint must beat per-constant by
+# ``improvement_threshold`` on the same composite metric the
+# single-pass search uses (P20 ∨ ρ). The single-pass result is
+# always preserved as a fallback so a no-improvement joint search
+# isn't wasted compute — it confirms the per-constant search found
+# the basin floor on this corpus.
+
+# Coordinate-descent loop cap. Convergence on the per-constant
+# bracket usually happens in 2-3 passes; the cap is a safety net
+# against pathological non-converging cases.
+_MAX_JOINT_PASSES = 6
+
+# Default restart count. Restart 0 always starts from
+# ``current_constants()`` (= the single-pass starting point); the
+# remaining restarts seed from random admissible points inside the
+# bracket. 4 restarts balances "robust against local optima" with
+# "compute cost stays under ~10s on a 4000-finding corpus".
+_DEFAULT_JOINT_RESTARTS = 4
+
+
+@dataclass
+class JointRestartTrace:
+    """One restart's coordinate-descent trajectory.
+
+    Surfaced in the report so an operator inspecting a joint refit
+    can see WHY the search picked a particular endpoint — which
+    restart converged where, how many passes each took, whether any
+    restart got stuck on an inadmissible swap mid-iteration.
+    """
+
+    seed_index: int             # 0 = current, 1+ = random
+    passes: int                 # iterations until convergence (or cap)
+    converged: bool             # True if no constant moved in final pass
+    starting_metric: Tuple[float, float, float]
+    final_metric: Tuple[float, float, float]
+    final_values: Dict[str, float]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "seed_index": self.seed_index,
+            "passes": self.passes,
+            "converged": self.converged,
+            "starting_metric": list(self.starting_metric),
+            "final_metric": list(self.final_metric),
+            "final_values": dict(self.final_values),
+        }
+
+
+@dataclass
+class JointRefitReport:
+    """Top-level joint-refit result. Mirrors :class:`RefitReport`
+    fields for compatibility with downstream tools, adds joint-
+    specific trace data."""
+
+    snapshot_date: str
+    status: str
+    sample_count: int
+    overall_baseline_precision: float
+    overall_proposed_precision: float
+    improvement: float
+    improvement_threshold: float
+    max_delta: float
+    # Per-constant proposed values (winning restart's endpoint),
+    # in the same shape as RefitReport.per_constant so
+    # _apply_refit.py can consume either report type.
+    per_constant: List[ConstantRefit] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+    # Joint-specific:
+    restarts: List[JointRestartTrace] = field(default_factory=list)
+    single_pass_metric: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    joint_winning_metric: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    @property
+    def proposed_values(self) -> Dict[str, float]:
+        return {
+            c.name: c.proposed for c in self.per_constant
+            if c.changed
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "snapshot_date": self.snapshot_date,
+            "status": self.status,
+            "sample_count": self.sample_count,
+            "overall_baseline_precision": self.overall_baseline_precision,
+            "overall_proposed_precision": self.overall_proposed_precision,
+            "improvement": self.improvement,
+            "improvement_threshold": self.improvement_threshold,
+            "max_delta": self.max_delta,
+            "per_constant": [c.to_dict() for c in self.per_constant],
+            "notes": list(self.notes),
+            "restarts": [r.to_dict() for r in self.restarts],
+            "single_pass_metric": list(self.single_pass_metric),
+            "joint_winning_metric": list(self.joint_winning_metric),
+            "proposed_values": self.proposed_values,
+            "mode": "joint",
+        }
+
+
+def joint_grid_search_refit(
+    corpus_dir: Path,
+    *,
+    max_delta: float = DEFAULT_MAX_DELTA,
+    improvement_threshold: float = DEFAULT_IMPROVEMENT_THRESHOLD,
+    min_samples: int = MIN_SAMPLES_FOR_REFIT,
+    restarts: int = _DEFAULT_JOINT_RESTARTS,
+    max_passes: int = _MAX_JOINT_PASSES,
+    seed: Optional[int] = None,
+    out_path: Optional[Path] = None,
+    ecosystem_filter: Optional[str] = None,
+) -> JointRefitReport:
+    """Multi-pass coordinate descent with random restarts.
+
+    Find inter-constant interactions the per-constant search misses.
+    See the section header above for the algorithm + safety bounds.
+
+    ``seed`` makes the random-restart sampling deterministic — same
+    seed produces the same restart trajectories, so refits run from
+    CI auto-PRs are reproducible.
+    """
+    import random
+
+    snapshot = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    notes: List[str] = []
+
+    samples = _load_findings_with_labels(corpus_dir)
+    if ecosystem_filter is not None:
+        before = len(samples)
+        samples = [
+            (f, label) for f, label in samples
+            if (f.get("ecosystem") or "?") == ecosystem_filter
+        ]
+        notes.append(
+            f"ecosystem_filter={ecosystem_filter!r}: "
+            f"{before} → {len(samples)} samples"
+        )
+
+    if not samples or len(samples) < min_samples:
+        status = ("error" if not samples else "insufficient_samples")
+        why = (
+            "no project samples found"
+            if not samples else
+            f"only {len(samples)} labelled findings; need ≥ {min_samples}"
+        )
+        return _emit_joint_report(
+            JointRefitReport(
+                snapshot_date=snapshot, status=status,
+                sample_count=len(samples),
+                overall_baseline_precision=0.0,
+                overall_proposed_precision=0.0,
+                improvement=0.0,
+                improvement_threshold=improvement_threshold,
+                max_delta=max_delta,
+                notes=[why],
+            ),
+            corpus_dir, out_path,
+        )
+
+    from packages.sca.risk import (
+        TUNABLE_CONSTANTS, current_constants, is_admissible,
+    )
+    current = current_constants()
+    bracket = {
+        n: (
+            current[n] * (1.0 - max_delta),
+            current[n] * (1.0 + max_delta),
+        ) for n in TUNABLE_CONSTANTS
+    }
+
+    rng = random.Random(seed)
+    baseline_tuple = _search_metric(samples, overrides=None)
+    notes.append(
+        f"baseline metric (P20, NDCG, ρ) = "
+        f"({baseline_tuple[0]:.3f}, {baseline_tuple[1]:.3f}, "
+        f"{baseline_tuple[2]:.3f}) on {len(samples)} samples"
+    )
+
+    # Always run the single-pass per-constant search first so we
+    # can compare joint to single. Cheap (~50 evals); gives a
+    # fallback when joint doesn't improve.
+    single_pass = grid_search_refit(
+        corpus_dir, max_delta=max_delta,
+        improvement_threshold=improvement_threshold,
+        min_samples=min_samples,
+        # Suppress the disk write — we'll emit our own joint
+        # report. ``out_path=`` to /dev/null isn't supported on
+        # Windows but tests pass an explicit tmp path; for the
+        # in-line call we write to a throwaway path and clean it
+        # up on success.
+        out_path=corpus_dir / "refit" / f".{snapshot}.single.tmp",
+        ecosystem_filter=ecosystem_filter,
+    )
+    try:
+        (corpus_dir / "refit" / f".{snapshot}.single.tmp").unlink()
+    except FileNotFoundError:
+        pass
+    single_pass_overrides = {
+        c.name: c.proposed for c in single_pass.per_constant if c.changed
+    }
+    single_pass_metric = (
+        _search_metric(samples, overrides=single_pass_overrides)
+        if single_pass_overrides else baseline_tuple
+    )
+    notes.append(
+        f"single-pass per-constant ends at "
+        f"(P20={single_pass_metric[0]:.3f}, "
+        f"NDCG={single_pass_metric[1]:.3f}, "
+        f"ρ={single_pass_metric[2]:.3f})"
+    )
+
+    # Per-coordinate-descent-step candidate granularity. 5 points
+    # per step covers the bracket density needed to find an interior
+    # optimum without over-evaluating: current, ±max_delta/3, and
+    # ±max_delta (bracket edges).
+    def _step_candidates(name: str, cur_val: float) -> List[float]:
+        lo, hi = bracket[name]
+        step = (hi - cur_val) / 3.0
+        step_lo = (cur_val - lo) / 3.0
+        # Clamp to bracket — coordinate descent must not drift past
+        # ±max_delta from the STARTING (current_constants) value.
+        return sorted({
+            cur_val,
+            max(lo, cur_val - step_lo),
+            min(hi, cur_val + step),
+            lo,
+            hi,
+        })
+
+    def _descent_from(
+        seed_idx: int, start_values: Dict[str, float],
+    ) -> JointRestartTrace:
+        values = dict(start_values)
+        starting_metric = _search_metric(samples, overrides=values)
+        passes_used = 0
+        converged = False
+        for pass_num in range(max_passes):
+            changed_any = False
+            for name in TUNABLE_CONSTANTS:
+                candidates = _step_candidates(name, values[name])
+                best_metric = _search_metric(samples, overrides=values)
+                best_val = values[name]
+                for c in candidates:
+                    if c == values[name]:
+                        continue
+                    trial = {**values, name: c}
+                    ok, _reason = is_admissible(trial)
+                    if not ok:
+                        continue
+                    m = _search_metric(samples, overrides=trial)
+                    if m > best_metric:
+                        best_metric = m
+                        best_val = c
+                if best_val != values[name]:
+                    values[name] = best_val
+                    changed_any = True
+            passes_used = pass_num + 1
+            if not changed_any:
+                converged = True
+                break
+        final_metric = _search_metric(samples, overrides=values)
+        return JointRestartTrace(
+            seed_index=seed_idx,
+            passes=passes_used,
+            converged=converged,
+            starting_metric=starting_metric,
+            final_metric=final_metric,
+            final_values=values,
+        )
+
+    # Restart 0 = current_constants. The remaining restarts seed
+    # from random admissible points in the bracket.
+    restart_traces: List[JointRestartTrace] = []
+    restart_traces.append(_descent_from(0, current))
+
+    for seed_idx in range(1, restarts):
+        # Sample admissibly. Up to 10 rejections per seed before
+        # giving up — if the admissible region is so narrow that
+        # random sampling can't find an entry point in 10 tries,
+        # the search isn't likely to discover much new anyway.
+        sampled: Optional[Dict[str, float]] = None
+        for _attempt in range(10):
+            cand = {
+                n: rng.uniform(bracket[n][0], bracket[n][1])
+                for n in TUNABLE_CONSTANTS
+            }
+            ok, _reason = is_admissible(cand)
+            if ok:
+                sampled = cand
+                break
+        if sampled is None:
+            notes.append(
+                f"restart #{seed_idx}: skipped — could not sample "
+                "an admissible starting point in 10 attempts"
+            )
+            continue
+        restart_traces.append(_descent_from(seed_idx, sampled))
+
+    # Pick the best restart endpoint by metric tuple.
+    best_trace = max(restart_traces, key=lambda t: t.final_metric)
+    joint_metric = best_trace.final_metric
+    notes.append(
+        f"best restart ends at "
+        f"(P20={joint_metric[0]:.3f}, NDCG={joint_metric[1]:.3f}, "
+        f"ρ={joint_metric[2]:.3f}) after {best_trace.passes} pass(es), "
+        f"converged={best_trace.converged} (seed_index={best_trace.seed_index})"
+    )
+
+    # Build per-constant report rows from the winning restart's
+    # endpoint values so downstream apply / dashboards see the
+    # same shape as a single-pass refit.
+    per_constant: List[ConstantRefit] = []
+    for name in TUNABLE_CONSTANTS:
+        cur_val = current[name]
+        prop_val = best_trace.final_values[name]
+        per_constant.append(ConstantRefit(
+            name=name,
+            current=cur_val,
+            proposed=prop_val,
+            # Single-value precision fields kept for back-compat;
+            # the proposed value is what matters for apply.
+            baseline_precision=baseline_tuple[0],
+            proposed_precision=joint_metric[0],
+        ))
+
+    # Improvement gate: joint must beat the BETTER of (single-pass,
+    # baseline) by ``improvement_threshold`` on either P20 or ρ.
+    # Comparing to single-pass (rather than baseline) avoids
+    # accepting a joint refit that just rediscovered what the
+    # single-pass already found.
+    reference_p20 = max(baseline_tuple[0], single_pass_metric[0])
+    reference_rho = max(baseline_tuple[2], single_pass_metric[2])
+    p20_improvement = joint_metric[0] - reference_p20
+    rho_improvement = joint_metric[2] - reference_rho
+
+    if (p20_improvement < improvement_threshold
+            and rho_improvement < improvement_threshold):
+        status = "rejected"
+        # Surface whichever metric came closest to the gate so
+        # operators reading the report know what's driving the
+        # rejection.
+        if p20_improvement >= rho_improvement:
+            notes.append(
+                f"joint P20 improvement vs single-pass "
+                f"{p20_improvement:+.3f} (ρ {rho_improvement:+.3f}) "
+                f"below threshold {improvement_threshold:.3f}; "
+                f"joint search confirms per-constant is at the "
+                f"basin floor on this corpus"
+            )
+        else:
+            notes.append(
+                f"joint ρ improvement vs single-pass "
+                f"{rho_improvement:+.3f} (P20 {p20_improvement:+.3f}) "
+                f"below threshold {improvement_threshold:.3f}; "
+                f"joint search confirms per-constant is at the "
+                f"basin floor on this corpus"
+            )
+        # Reset per_constant to the single-pass winners (or none)
+        # so the report doesn't propose values we just rejected.
+        per_constant = list(single_pass.per_constant)
+    else:
+        status = "proposed"
+        notes.append(
+            f"joint refit accepted: P20 {p20_improvement:+.3f}, "
+            f"ρ {rho_improvement:+.3f} vs single-pass — at least "
+            f"one above threshold {improvement_threshold:.3f}"
+        )
+
+    return _emit_joint_report(
+        JointRefitReport(
+            snapshot_date=snapshot, status=status,
+            sample_count=len(samples),
+            overall_baseline_precision=baseline_tuple[0],
+            overall_proposed_precision=joint_metric[0],
+            improvement=p20_improvement,
+            improvement_threshold=improvement_threshold,
+            max_delta=max_delta,
+            per_constant=per_constant,
+            notes=notes,
+            restarts=restart_traces,
+            single_pass_metric=single_pass_metric,
+            joint_winning_metric=joint_metric,
+        ),
+        corpus_dir, out_path,
+    )
+
+
+def _emit_joint_report(
+    report: JointRefitReport, corpus_dir: Path,
+    out_path: Optional[Path],
+) -> JointRefitReport:
+    """Mirror of ``_emit_report`` for the joint variant. Writes to
+    ``<corpus_dir>/refit/<date>.joint.json`` by default so a joint
+    refit doesn't overwrite a same-day single-pass refit."""
+    if out_path is None:
+        refit_dir = corpus_dir / "refit"
+        refit_dir.mkdir(parents=True, exist_ok=True)
+        out_path = refit_dir / f"{report.snapshot_date}.joint.json"
+    else:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return report
+
+
 def _emit_report(
     report: RefitReport, corpus_dir: Path, out_path: Optional[Path],
 ) -> RefitReport:
