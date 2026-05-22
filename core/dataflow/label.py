@@ -222,8 +222,13 @@ class GroundTruth:
             ),
         )
 
-    def to_json(self, **kwargs: Any) -> str:
-        return json.dumps(self.to_dict(), **kwargs)
+    def to_json(self, *, indent: Optional[int] = None) -> str:
+        """Render as JSON. Explicit ``indent`` signature replaces
+        a catch-all ``**kwargs`` — the only kwarg any caller ever
+        passes is ``indent=2`` (corpus generator + handlabel_seed
+        for pretty-printing). The explicit shape lets mypy / ruff
+        catch typos in callers and makes the contract greppable."""
+        return json.dumps(self.to_dict(), indent=indent)
 
     @classmethod
     def from_json(cls, text: str) -> "GroundTruth":
