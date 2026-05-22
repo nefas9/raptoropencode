@@ -163,6 +163,7 @@ FILTERS: dict[str, list[str]] = {
         "core/json/**",
         "core/logging/**",
         "core/sandbox/**",
+        "core/witness/**",
         "requirements*.txt",
         ".github/workflows/tests.yml",
     ],

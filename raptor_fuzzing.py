@@ -411,6 +411,42 @@ Examples:
         print(f"\nCollected {len(crashes)} unique crashes")
         print(f"   Analysing top {min(len(crashes), args.max_crashes)}")
 
+        # Record each crash as a canonical Witness for downstream
+        # consumers (reporting, future ZKPoX bundle assembly,
+        # future calibrated IntentMatchJudge). AFL++ surfaces a
+        # crash only after observing the target exit via a signal
+        # on these bytes — they're the cleanest "verified witness"
+        # the framework has. Failures here are non-fatal: the
+        # crashes themselves remain on disk in their AFL-native
+        # form even if the canonical Witness write fails.
+        try:
+            from core.witness import WitnessStore
+            from packages.fuzzing.witness_adapter import witness_from_crash
+            witness_store = WitnessStore(out_dir / "witnesses")
+            recorded = 0
+            for crash in crashes:
+                try:
+                    witness, data = witness_from_crash(
+                        crash, target_binary_path=binary_path,
+                    )
+                    witness_store.put(witness, data)
+                    recorded += 1
+                except Exception as e:  # noqa: BLE001 — best-effort
+                    logger.warning(
+                        f"failed to record witness for crash "
+                        f"{crash.crash_id}: {type(e).__name__}: {e}"
+                    )
+            if recorded:
+                print(
+                    f"   Recorded {recorded}/{len(crashes)} crashes "
+                    f"as Witnesses → {out_dir / 'witnesses'}"
+                )
+        except Exception as e:  # noqa: BLE001 — best-effort
+            logger.warning(
+                f"Witness-store setup failed: {type(e).__name__}: {e}; "
+                f"continuing without canonical Witness records"
+            )
+
         # Analyse crashes
         crash_analyser = CrashAnalyser(binary_path)
         llm_agent = CrashAnalysisAgent(
