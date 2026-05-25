@@ -10,10 +10,13 @@ name: Test tier
 #            PRs, whose read-only token cannot pull a private GHCR package.
 #            Slower, but never blocked on the image's visibility.
 #
-# Exactly one path runs per call; the other is skipped via `if`. Job
-# display names carry the tier so the status check reads
-# `python-unit-tests-<tier> / python-<tier>[-runner]` — never a bare
-# `image`/`runner` label.
+# Exactly one path runs per call; the other is skipped via `if`. Inner
+# job names are STATIC (`image` / `runner`) on purpose: GitHub only
+# evaluates a job's `name:` expression when the job actually RUNS, so a
+# dynamic `${{ inputs.tier }}` name renders as the literal template on the
+# ever-present skipped twin. The tier is carried by the caller's job name
+# instead — checks read `python-unit-tests-<tier> / image` (or `/ runner`),
+# clean in both the run and skipped states.
 
 on:
   workflow_call:
@@ -49,7 +52,6 @@ jobs:
   # Fast path: deps are already on the image's system Python.
   image:
     if: ${{ inputs.use_container }}
-    name: python-${{ inputs.tier }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -76,7 +78,6 @@ jobs:
   # the runner's system Python (uv's cache keyed on requirements*.txt).
   runner:
     if: ${{ !inputs.use_container }}
-    name: python-${{ inputs.tier }}-runner
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
