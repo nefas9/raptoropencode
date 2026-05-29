@@ -137,11 +137,11 @@ FILTERS: dict[str, list[str]] = {
         "core/schema_constants/**",
         "core/security/**",
         "core/smt_solver/**",
-        "core/verified_outcome/**",
         "core/witness/**",
         "core/zip/**",
         "requirements*.txt",
         ".github/workflows/tests.yml",
+        "core/verified_outcome/**",
     ],
     "cve_diff": [
         "packages/cve_diff/**",
@@ -229,6 +229,27 @@ FILTERS: dict[str, list[str]] = {
         "core/security/**",
         "packages/codeql/**",
         "packages/exploitability_validation/**",
+        "requirements*.txt",
+        ".github/workflows/tests.yml",
+    ],
+    # source_intel: Coccinelle-driven memory-corruption evidence.
+    # Carved into its own tier so the dedicated job can apt-install
+    # coccinelle and actually RUN the real-spatch E2E — in the broad
+    # ``python`` fast tier those tests skipif(not which("spatch")) and
+    # so never executed in CI (spatch isn't installed there). The
+    # import-derived globs below are auto-maintained by
+    # ``.github/tests/test_filter_coverage.py --update``.
+    "source_intel": [
+        "packages/source_intel/**",
+        "packages/coccinelle/**",
+        "packages/codeql/dataflow_validator.py",
+        "packages/llm_analysis/**",
+        "core/build/**",
+        "core/dataflow/**",
+        "core/function_taxonomy/**",
+        "core/inventory/**",
+        "core/llm/**",
+        "core/security/**",
         "requirements*.txt",
         ".github/workflows/tests.yml",
     ],
